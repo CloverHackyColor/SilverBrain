@@ -15,7 +15,7 @@ qt_add_resources(QML_RESOURCES src/ui/qml.qrc)
 add_executable(SilverBrain
     src/main.cpp
     src/core/llama-engine.cpp
-    src/ui/qml.qrc
+    src/core/llama-engine.h
     ${QML_RESOURCES}  # Добавляем скомпилированные ресурсы
 )
 

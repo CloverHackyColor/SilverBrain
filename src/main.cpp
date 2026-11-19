@@ -12,7 +12,7 @@ int main(int argc, char *argv[]) {
     LlamaEngine llamaEngine;
     engine.rootContext()->setContextProperty("llamaEngine", &llamaEngine);
     
-    engine.load(QUrl(QStringLiteral("qrc:/ui/main.qml")));
-    
+    engine.load(QUrl(QStringLiteral("qrc:/main.qml")));
+
     return app.exec();
 }
