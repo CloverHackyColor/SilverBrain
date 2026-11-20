@@ -7,7 +7,7 @@ Rectangle {
     width: 200
     height: bubbleText.implicitHeight + 24
     radius: 10
-    color: isUser ? "#94c4f5" : "#bcbcc5"
+    color: isUser ? "#090d10" : "#58585b"
 
     anchors.right: isUser ? parent.right : undefined
     anchors.left: isUser ? undefined : parent.left

@@ -17,6 +17,8 @@ set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_APP      OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_UI       OFF CACHE BOOL "" FORCE)
 
+set(MACOS_RES_DIR ${CMAKE_SOURCE_DIR}/platforms/macos)
+
 add_subdirectory(third_party/llama.cpp)
 
 qt_add_resources(QML_RESOURCES src/ui/qml.qrc)
@@ -50,7 +52,7 @@ if(APPLE)
     )
 
     # Иконка: кладётся внутрь .app-бандла в Contents/Resources
-    set(APP_ICON_MACOS ${CMAKE_SOURCE_DIR}/resources/SilverBrain.icns)
+    set(APP_ICON_MACOS ${CMAKE_SOURCE_DIR}/platforms/macos/SilverBrain.icns)
     set_source_files_properties(${APP_ICON_MACOS} PROPERTIES
         MACOSX_PACKAGE_LOCATION Resources)
     target_sources(SilverBrain PRIVATE ${APP_ICON_MACOS})
@@ -67,3 +69,20 @@ target_link_libraries(SilverBrain
     Qt${QT_VERSION_MAJOR}::Core
     llama
 )
+
+if(APPLE)
+    find_program(MACDEPLOYQT_EXE macdeployqt6
+                 HINTS /opt/local/libexec/qt6/bin
+                 PATHS /opt/local/libexec/qt6/bin
+                 NO_DEFAULT_PATH)
+    if(MACDEPLOYQT_EXE)
+        add_custom_command(TARGET SilverBrain POST_BUILD
+            COMMAND ${MACDEPLOYQT_EXE} $<TARGET_BUNDLE_DIR:SilverBrain>
+                    -qmldir=${CMAKE_SOURCE_DIR}/src/ui/qml
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${CMAKE_SOURCE_DIR}/platforms/macos/qt.conf
+                    $<TARGET_BUNDLE_DIR:SilverBrain>/Contents/Resources/qt.conf
+            COMMAND codesign --force --deep --sign - $<TARGET_BUNDLE_DIR:SilverBrain>
+            COMMENT "Deploying Qt frameworks into bundle")
+    endif()
+endif()

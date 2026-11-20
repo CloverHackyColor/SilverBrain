@@ -1,13 +1,14 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import QtQuick.Dialogs
 
 ApplicationWindow {
     visible: true
     width: 1280
     height: 800
     title: "Silver Brain"
-    color: "#1e1e22"
+    color: "#2a2a25"
 
     ColumnLayout {
         anchors.fill: parent
@@ -20,14 +21,29 @@ ApplicationWindow {
             TextField {
                 id: modelPathField
                 Layout.fillWidth: true
-                placeholderText: "Путь к GGUF-модели..."
+                placeholderText: "Название GGUF-модели..."
+            }
+            FileDialog {
+                id: modelFileDialog
+                title: "Выберите файл модели"
+                nameFilters: ["GGUF модели (*.gguf)"]
+                selectedNameFilterExtensions: ["*.gguf"]
+                onAccepted: {
+                    // currentFile — локальный URL выбранного файла
+                    var path = selectedFile.toString()
+                    if (path.startsWith("file://"))
+                    path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
+                    modelPathField.text = path 
+                    llamaEngine.loadModel(path)
+                }
             }
             Button {
                 text: "Load model"
                 enabled: !llamaEngine.busy
-                onClicked: llamaEngine.loadModel(modelPathField.text)
+                onClicked: modelFileDialog.open()
+                //llamaEngine.loadModel(modelPathField.text)
             }
-            Label { id: statusLabel; color: "white" }
+            Label { id: statusLabel; color: "black" }
         }
 
         ListView {
