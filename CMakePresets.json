@@ -4,7 +4,7 @@
     {
       "name": "macos",
       "binaryDir": "build",
-      "cacheVariables": { "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/qt" }
+      "cacheVariables": { "CMAKE_PREFIX_PATH": "/opt/local/libexec/qt5" }
     },
     {
       "name": "windows",

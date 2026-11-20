@@ -14,6 +14,9 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Quick Core)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_APP      OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_UI       OFF CACHE BOOL "" FORCE)
+
 add_subdirectory(third_party/llama.cpp)
 
 qt_add_resources(QML_RESOURCES src/ui/qml.qrc)
