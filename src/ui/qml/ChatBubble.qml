@@ -7,7 +7,8 @@ Rectangle {
     width: 200
     height: bubbleText.implicitHeight + 24
     radius: 10
-    color: isUser ? "#090d10" : "#58585b"
+    color: isUser ? "#dceaf7" : "#ffffff"
+    border.color: "#e2dfd9"
 
     anchors.right: isUser ? parent.right : undefined
     anchors.left: isUser ? undefined : parent.left
@@ -17,7 +18,7 @@ Rectangle {
         anchors.fill: parent
         anchors.margins: 12
         wrapMode: Text.Wrap
-        color: isUser ? "black" : "#464c70fd"
+        color: isUser ? "black" : "#26251f"
         text: messageText
     }
 }

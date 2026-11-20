@@ -8,7 +8,7 @@ ApplicationWindow {
     width: 1280
     height: 800
     title: "Silver Brain"
-    color: "#2a2a25"
+    color: "#f6f5f2"
 
     ColumnLayout {
         anchors.fill: parent
@@ -21,13 +21,20 @@ ApplicationWindow {
             TextField {
                 id: modelPathField
                 Layout.fillWidth: true
+                placeholderTextColor: "#a09d94"
+                color: "#26251f"
+                background: Rectangle {
+                    radius: 6
+                    color: "#ffffff"
+                    border.color: "#d9d6cf"
+                }
                 placeholderText: "Название GGUF-модели..."
             }
             FileDialog {
                 id: modelFileDialog
                 title: "Выберите файл модели"
                 nameFilters: ["GGUF модели (*.gguf)"]
-                selectedNameFilterExtensions: ["*.gguf"]
+                //selectedNameFilterExtensions: ["*.gguf"]
                 onAccepted: {
                     // currentFile — локальный URL выбранного файла
                     var path = selectedFile.toString()
@@ -39,11 +46,14 @@ ApplicationWindow {
             }
             Button {
                 text: "Load model"
+                background: Rectangle { radius: 6; color: "#e7e4de" }
                 enabled: !llamaEngine.busy
                 onClicked: modelFileDialog.open()
-                //llamaEngine.loadModel(modelPathField.text)
             }
-            Label { id: statusLabel; color: "black" }
+            Label { 
+                id: statusLabel; 
+                color: statusLabel.text.startsWith("Ошибка") ? "#c62828" : "#2e7d32"
+            }
         }
 
         ListView {
@@ -74,17 +84,32 @@ ApplicationWindow {
             TextField {
                 id: inputField
                 Layout.fillWidth: true
+                placeholderTextColor: "#a09d94"
+                color: "#26251f"
+                background: Rectangle {
+                    radius: 6
+                    color: "#ffffff"
+                    border.color: "#d9d6cf"
+                }
                 enabled: !llamaEngine.busy
                 placeholderText: "Type your message..."
                 onAccepted: sendMessage()
             }
             Button {
                 text: "Send"
+                background: Rectangle {
+                    radius: 6
+                    color: parent.pressed ? "#2564d0"
+                            : parent.hovered ? "#3b7bf1" : "#2f6feb"
+                    }
+                contentItem: Text { text: parent.text; color: "#ffffff"
+                        horizontalAlignment: Text.AlignHCenter }
                 enabled: !llamaEngine.busy
                 onClicked: sendMessage()
             }
             Button {
                 text: "Clear"
+                background: Rectangle { radius: 6; color: "#e7e4de" }
                 enabled: !llamaEngine.busy
                 onClicked: {
                     chatModel.clear()
