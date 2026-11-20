@@ -34,10 +34,18 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("chatModel", &chatModel);
 
     // Не молчим, если QML не загрузился
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
                      &app, []() { QCoreApplication::exit(-1); },
                      Qt::QueuedConnection);
     engine.load(QUrl(QStringLiteral("qrc:/main.qml")));
+#else
+    // Qt5-путь: objectCreated приходит на каждый загруженный QML;
+    // если после load корней нет — загрузка провалилась
+    engine.load(QUrl(QStringLiteral("qrc:/qml/main.qml")));
+    if (engine.rootObjects().isEmpty())
+        return -1;
+#endif
 
     return app.exec();
 }
