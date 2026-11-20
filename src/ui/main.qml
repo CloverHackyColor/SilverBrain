@@ -7,42 +7,102 @@ ApplicationWindow {
     width: 1280
     height: 800
     title: "Silver Brain"
-    
+    color: "#1e1e22"
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 10
-        
-        TextArea {
-            id: chatArea
+        spacing: 8
+
+        RowLayout {
+            Layout.fillWidth: true
+
+            TextField {
+                id: modelPathField
+                Layout.fillWidth: true
+                placeholderText: "Путь к GGUF-модели..."
+            }
+            Button {
+                text: "Load model"
+                enabled: !llamaEngine.busy
+                onClicked: llamaEngine.loadModel(modelPathField.text)
+            }
+            Label { id: statusLabel; color: "white" }
+        }
+
+        ListView {
+            id: chatList
             Layout.fillWidth: true
             Layout.fillHeight: true
-            readOnly: true
-            wrapMode: TextArea.Wrap
+            clip: true
+            spacing: 8
+            model: chatModel
+
+            delegate: ChatBubble {
+                width: parent ? parent.width : 0
+                role: model.role
+                text: model.text
+                // позиционируем пузырь по роли
+                x: isUser ? (parent.width - width) : 0
+            }
+
+            // Автопрокрутка вниз при новых токенах
+            onCountChanged: positionViewAtEnd()
+
+            ScrollIndicator.vertical: ScrollIndicator {}
         }
-        
+
         RowLayout {
+            Layout.fillWidth: true
+
             TextField {
                 id: inputField
                 Layout.fillWidth: true
+                enabled: !llamaEngine.busy
                 placeholderText: "Type your message..."
                 onAccepted: sendMessage()
             }
-            
             Button {
                 text: "Send"
+                enabled: !llamaEngine.busy
                 onClicked: sendMessage()
+            }
+            Button {
+                text: "Clear"
+                onClicked: chatModel.clear()
             }
         }
     }
-    
+
     function sendMessage() {
         var message = inputField.text
-        chatArea.text += "\nYou: " + message
+        if (message.trim() === "")
+            return
+
+        chatModel.addMessage("user", message)
+        // Пустой ответ ассистента: в него будет стримиться текст по токенам
+        chatModel.addMessage("assistant", "")
+
         inputField.text = ""
-        
-        // Вызов C++ функции
-        llamaEngine.generateAsync(message, function(response) {
-            chatArea.text += "\nAssistant: " + response
-        })
+        llamaEngine.generateAsync(message)
+    }
+
+    Connections {
+        target: llamaEngine
+
+        function onModelLoaded(ok, error) {
+            statusLabel.text = ok ? "Модель загружена" : ("Ошибка: " + error)
+        }
+        function onTokenReceived(piece) {
+            // Дописываем в последнее сообщение (пустое, созданное в sendMessage)
+            chatModel.appendToLast(piece)
+        }
+        function onGenerationFinished(fullText) {
+            // Текст уже досыпал токенами; здесь ничего дополнять не нужно.
+            // Место под будущие пост-обработки (подсветку, автосохранение и т.п.)
+        }
+        function onGenerationError(message) {
+            chatModel.appendToLast("[Ошибка] " + message)
+        }
     }
 }

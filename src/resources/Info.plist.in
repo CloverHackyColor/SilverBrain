@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+    <!-- Заполняется CMake из свойств таргета -->
+    <key>CFBundleExecutable</key>
+    <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+    <key>CFBundleIdentifier</key>
+    <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+    <key>CFBundleVersion</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+    <key>CFBundleName</key>
+    <string>Silver Brain</string>
+
+    <!-- Константы -->
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <!-- Показывается в Finder и в доке, если не задана локализация -->
+    <key>CFBundleDisplayName</key>
+    <string>Silver Brain</string>
+
+    <!-- Категория приложения в Launchpad / App Store -->
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+
+    <!-- Retina: даёт нормальную резкость шрифтов и QML-рендеринга -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <!-- Иконка: берётся из ресурсов бандла, см. ниже -->
+    <key>CFBundleIconFile</key>
+    <string>SilverBrain</string>
+
+    <!-- Отключает «песочницу графиков» для Metal — актуально для GPU-инференса
+         на ноутбуках с двумя GPU -->
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+
+</dict>
+</plist>
