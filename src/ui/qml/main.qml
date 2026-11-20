@@ -70,8 +70,10 @@ ApplicationWindow {
             Button {
                 text: "Clear"
                 enabled: !llamaEngine.busy
-                onClicked: chatModel.clear()
-                llamaEngine.clearHistory()
+                onClicked: {
+                    chatModel.clear()
+                    llamaEngine.clearHistory()
+                }
             }
         }
     }

@@ -22,7 +22,7 @@ qt_add_resources(QML_RESOURCES src/ui/qml.qrc)
 # Слово WIN32 ставит подсистему GUI: без него рядом с окном будет
 # висеть чёрное окно cmd
 if(WIN32)
-    set(APP_WIN32 WIN32)
+   set(APP_WIN32 WIN32)
 endif()
 
 add_executable(SilverBrain
