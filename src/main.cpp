@@ -1,6 +1,8 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+
+#include "core/chat-model.h"
 #include "core/llama-engine.h"
 
 /*
@@ -28,7 +30,7 @@ int main(int argc, char *argv[]) {
     QQmlApplicationEngine engine;
 
     LlamaEngine llamaEngine;
-        ChatModel chatModel;
+    ChatModel chatModel;
 
     engine.rootContext()->setContextProperty("llamaEngine", &llamaEngine);
     engine.rootContext()->setContextProperty("chatModel", &chatModel);

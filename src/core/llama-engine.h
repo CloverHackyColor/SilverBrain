@@ -21,8 +21,9 @@ public:
     ~LlamaWorker() override;
 
 public slots:
-    void load(const QString &modelPath);
-    void generate(const QString &prompt);
+    Q_INVOKABLE void load(const QString &modelPath);
+    Q_INVOKABLE void generateAsync(const QString &prompt);
+    Q_INVOKABLE void clearHistory() { history.clear(); }
 
 signals:
     void modelLoaded(bool ok, const QString &error);
@@ -33,7 +34,7 @@ signals:
 private:
     bool ensureLoaded();
     std::string buildPrompt() const;
-    QString takeDecodableUtf8();   // отдаёт из буфера только целые UTF-8 символы
+ //   QString takeDecodableUtf8();   // отдаёт из буфера только целые UTF-8 символы
 
     llama_model       *model   = nullptr;
     llama_context     *context = nullptr;
@@ -63,6 +64,7 @@ public:
 
     Q_INVOKABLE void loadModel(const QString &modelPath);
     Q_INVOKABLE void generateAsync(const QString &prompt);
+    Q_INVOKABLE void clearHistory(); 
 
     bool busy() const { return m_busy; }
 
@@ -77,6 +79,7 @@ signals:
     // Внутренние: уводят работу в поток
     void loadRequested(const QString &modelPath);
     void generateRequested(const QString &prompt);
+    void clearHistoryRequested(); 
 
 private slots:
     void onWorkFinished();   // снимает busy по завершении любой операции

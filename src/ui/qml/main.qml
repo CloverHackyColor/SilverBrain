@@ -34,16 +34,16 @@ ApplicationWindow {
             id: chatList
             Layout.fillWidth: true
             Layout.fillHeight: true
+            anchors.margins: 16
+            model: chatModel  
             clip: true
             spacing: 8
-            model: chatModel
+            
 
             delegate: ChatBubble {
-                width: parent ? parent.width : 0
-                role: model.role
-                text: model.text
-                // позиционируем пузырь по роли
-                x: isUser ? (parent.width - width) : 0
+                width: chatList.width - 32
+                isUser: model.role === "user"   // model доступен ЗДЕСЬ, внутри делегата
+                messageText: model.text
             }
 
             // Автопрокрутка вниз при новых токенах
@@ -69,7 +69,9 @@ ApplicationWindow {
             }
             Button {
                 text: "Clear"
+                enabled: !llamaEngine.busy
                 onClicked: chatModel.clear()
+                llamaEngine.clearHistory()
             }
         }
     }

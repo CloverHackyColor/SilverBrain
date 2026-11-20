@@ -7,7 +7,7 @@ int ChatModel::rowCount(const QModelIndex &parent) const {
 }
 
 QVariant ChatModel::data(const QModelIndex &index, int role) const {
-    if (!hasIndex(index.row(), index.column(), parent))
+    if (!hasIndex(index.row(), 0, QModelIndex()))
         return {};
 
     const ChatMessage &msg = m_messages[index.row()];

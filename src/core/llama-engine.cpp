@@ -91,7 +91,7 @@ std::string LlamaWorker::buildPrompt() const {
     return out;
 }
 
-void LlamaWorker::generate(const QString &prompt) {
+void LlamaWorker::generateAsync(const QString &prompt) {
     if (!ensureLoaded())
         return;
 
@@ -104,23 +104,37 @@ void LlamaWorker::generate(const QString &prompt) {
     std::vector<llama_token> tokens;
     while (true) {
         const std::string formatted = buildPrompt();
-        const bool addSpecial = (history.size() == 1); // BOS только в начале диалога
-
-        int needed = llama_tokenize(vocab, formatted.c_str(),
-                                    static_cast<int32_t>(formatted.size()),
-                                    nullptr, 0, addSpecial, true);
-        if (needed < 0) {
-            emit generationError(QStringLiteral("Tokenization failed"));
+        if (formatted.empty()) {
+            emit generationError(QStringLiteral("Failed to build chat template"));
             return;
         }
+        const bool addSpecial = (history.size() == 1); // BOS только в начале диалога
+        // Верхняя оценка: токенов не больше, чем байтов в UTF-8 (+пара на спец-токены)
+        tokens.resize(formatted.size() + 2);
+        int n = llama_tokenize(vocab, formatted.c_str(),
+                                    static_cast<int32_t>(formatted.size()),
+                                    tokens.data(), static_cast<int32_t>(tokens.size()), addSpecial, true);
+        if (n < 0) {
+            // Не хватило буфера: API сообщает требуемый размер со знаком минус
+            tokens.resize(static_cast<size_t>(-n));
+            n = llama_tokenize(vocab, formatted.c_str(),
+                               static_cast<int32_t>(formatted.size()),
+                               tokens.data(), static_cast<int32_t>(tokens.size()),
+                               addSpecial, true);
+            if (n < 0) {
+                emit generationError(QStringLiteral("Tokenization failed"));
+                return;
+            }
+        }
+        if (n == 0) {
+            emit generationError(QStringLiteral("Empty prompt after template"));
+            return;
+        }
+        tokens.resize(static_cast<size_t>(n));
 
         const int64_t maxNew = kMaxNewTokens;
-        if (static_cast<int64_t>(needed) + maxNew <= nCtx - kCtxReserve ||
+        if (static_cast<int64_t>(n) + maxNew <= nCtx - kCtxReserve ||
             history.size() <= 1) {
-            tokens.resize(needed);
-            llama_tokenize(vocab, formatted.c_str(),
-                           static_cast<int32_t>(formatted.size()),
-                           tokens.data(), needed, addSpecial, true);
             break;
         }
         history.erase(history.begin());
@@ -129,7 +143,7 @@ void LlamaWorker::generate(const QString &prompt) {
     // Каждый ход начинаем «с чистого листа»: чистим KV-кэш и прогоняем
     // всю историю заново. Проще и надёжнее, чем инкрементальный кэш, —
     // оптимальность можно добавить позже.
-    llama_memory_clear(llama_get_memory(context));
+    llama_memory_clear(llama_get_memory(context), /*data=*/true);
 
     llama_batch batch = llama_batch_get_one(tokens.data(),
                                             static_cast<int32_t>(tokens.size()));
@@ -163,7 +177,7 @@ void LlamaWorker::generate(const QString &prompt) {
 
     // Хвост недобранных байтов: отдаём как есть (редкий случай обрыва посреди символа)
     if (!pending.empty())
-        full += QString::fromUtf8(pending).toStdString();
+        full += QString::fromUtf8(pending.data(), static_cast<int>(pending.size())).toStdString();
 
     history.emplace_back("assistant", full);
     emit generationFinished(QString::fromStdString(full));
@@ -176,7 +190,8 @@ LlamaEngine::LlamaEngine(QObject *parent) : QObject(parent) {
     m_worker->moveToThread(&m_thread);
 
     connect(this, &LlamaEngine::loadRequested,     m_worker, &LlamaWorker::load,     Qt::QueuedConnection);
-    connect(this, &LlamaEngine::generateRequested, m_worker, &LlamaWorker::generate, Qt::QueuedConnection);
+    connect(this, &LlamaEngine::generateRequested, m_worker, &LlamaWorker::generateAsync, Qt::QueuedConnection);
+    connect(this, &LlamaEngine::clearHistoryRequested, m_worker, &LlamaWorker::clearHistory, Qt::QueuedConnection); 
 
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::modelLoaded);
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::onWorkFinished);
@@ -215,4 +230,9 @@ void LlamaEngine::generateAsync(const QString &prompt) {
     m_busy = true;
     emit busyChanged();
     emit generateRequested(prompt);
+}
+
+
+void LlamaEngine::clearHistory() {
+    emit clearHistoryRequested();
 }
