@@ -21,15 +21,23 @@ message(STATUS "Using Qt ${QT_VERSION_MAJOR}: ${Qt${QT_VERSION_MAJOR}_DIR}")
 # llama.cpp как статическая библиотека
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(LLAMA_TESTS_INSTALL  OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_APP      OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_UI       OFF CACHE BOOL "" FORCE)
-
+set(LLAMA_BUILD_MTMD     ON  CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_IS_DEV   OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE          ON  CACHE BOOL "" FORCE) 
+if(APPLE)
+   # Метал-шейдер вкомпилирован в бинарник — .app самодостаточен
+    set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
+endif()
 set(MACOS_RES_DIR ${CMAKE_SOURCE_DIR}/platforms/macos)
 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-const-variable -Wno-unused-function")
+
+
 add_subdirectory(third_party/llama.cpp)
-target_include_directories(SilverBrain PRIVATE third_party/llama.cpp/tools/mtmd)
-target_link_libraries(SilverBrain PRIVATE mtmd)
 
 qt_add_resources(QML_RESOURCES src/ui/qml.qrc)
 
@@ -67,8 +75,7 @@ if(APPLE)
         MACOSX_PACKAGE_LOCATION Resources)
     target_sources(SilverBrain PRIVATE ${APP_ICON_MACOS})
 
-    # Метал-шейдер вкомпилирован в бинарник — .app самодостаточен
-    set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
+ 
 endif()
 
 # ------------------------------------------------------------------ Linux ---
@@ -78,6 +85,10 @@ target_link_libraries(SilverBrain
     Qt${QT_VERSION_MAJOR}::Quick
     Qt${QT_VERSION_MAJOR}::Core
     llama
+    mtmd 
+)
+target_include_directories(SilverBrain PRIVATE
+    third_party/llama.cpp/tools/mtmd  # <- и сюда
 )
 
 if(APPLE)

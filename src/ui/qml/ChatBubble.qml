@@ -1,25 +1,31 @@
 import QtQuick 2.15
 
-Rectangle {
-    property bool isUser: false
-    property string messageText: ""
+// ChatBubble.qml
+    Item {
+        id: root
+        property bool isUser
+        property string messageText
+        // width приходит из делегата ListView (chatList.width - 32)
 
-    width: 200
-    height: bubbleText.implicitHeight + 24
-    radius: 10
-    color: isUser ? "#dceaf7" : "#ffffff"
-    border.color: "#e2dfd9"
+        implicitHeight: bubble.implicitHeight   // делегат растёт от пузыря
 
-    anchors.right: isUser ? parent.right : undefined
-    anchors.left: isUser ? undefined : parent.left
+        Rectangle {
+            id: bubble
+            anchors.left: root.isUser ? undefined : parent.left
+            anchors.right: root.isUser ? parent.right : undefined
+            width: Math.min(parent.width * 0.8, msg.implicitWidth + 24)
+            implicitHeight: msg.implicitHeight + 20   // 20 = два отступа
 
-    TextEdit {
-        id: msgText
-        readOnly: true
-        selectByMouse: true              // выделение мышью — и Cmd+C заработал
-        textFormat: Text.MarkdownText    // **жирный**, код, списки, заголовки
-        wrapMode: TextEdit.Wrap
-        color: model.role === "user" ? "#1f4fa3" : "#26251f"
-        text: model.text
+            TextEdit {
+                id: msg
+                readOnly: true
+                selectByMouse: true
+                textFormat: Text.MarkdownText
+                wrapMode: TextEdit.Wrap
+                width: bubble.width - 24
+                height: implicitHeight      // <-- ключевая строка
+                text: root.messageText
+                color: root.isUser ? "#1f4fa3" : "#26251f"
+            }
+        }
     }
-}

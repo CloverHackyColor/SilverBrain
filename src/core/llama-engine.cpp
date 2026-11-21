@@ -20,6 +20,9 @@ QString takeDecodableUtf8(std::string &buf) {
     return {}; // некорректных байтов пока недостаточно — ждём следующий токен
 }
 
+const std::pair<std::string, std::string> kSystemMessage = {
+    "system", "You are SilverBrain, a helpful local assistant."};
+
 } // namespace
 
 // ============================ LlamaWorker ==================================
@@ -138,7 +141,7 @@ void LlamaWorker::generateAsync(const QString &prompt, float temperature,
   while (true) {
     const std::string formatted = buildPrompt();
     if (formatted.empty()) {
-      emit (QStringLiteral("Failed to build chat template"));
+      emit generationError(QStringLiteral("Failed to build chat template"));
       return;
     }
     const bool addSpecial =
@@ -175,7 +178,8 @@ void LlamaWorker::generateAsync(const QString &prompt, float temperature,
                                .arg(nCtx));
       return; // вместо decode через край
     }
-    history.erase(history.begin());
+    const size_t eraseFrom = (history.front().first == "system") ? 1 : 0;
+    history.erase(history.begin() + static_cast<long>(eraseFrom));
   }
 
   // Каждый ход начинаем «с чистого листа»: чистим KV-кэш и прогоняем
@@ -231,6 +235,45 @@ void LlamaWorker::generateAsync(const QString &prompt, float temperature,
 
   history.emplace_back("assistant", full);
   emit generationFinished(QString::fromStdString(full));
+}
+
+bool LlamaWorker::saveHistory(const QString &path) {
+  QJsonArray arr;
+  for (const auto &m : history) {
+    QJsonObject o;
+    o["role"] = QString::fromStdString(m.first);
+    o["text"] = QString::fromStdString(m.second);
+    arr.append(o);
+  }
+  QJsonObject root;
+  root["messages"] = arr;
+  QFile f(path);
+  if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    return false;
+  f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+  return true;
+}
+
+bool LlamaWorker::loadHistory(const QString &path) {
+  QFile f(path);
+  if (!f.open(QIODevice::ReadOnly))
+    return false;
+  const auto doc = QJsonDocument::fromJson(f.readAll());
+  const auto arr = doc.object()["messages"].toArray();
+  if (arr.isEmpty())
+    return false;
+
+  history.clear();
+  history.reserve(static_cast<size_t>(arr.size()));
+  for (const auto &v : arr) {
+    const auto o = v.toObject();
+    history.push_back({o["role"].toString().toStdString(),
+                       o["text"].toString().toStdString()});
+  }
+  if (history.empty() || history.front().first != "system")
+    history.insert(history.begin(), kSystemMessage);
+
+  return true;
 }
 
 // ============================ LlamaEngine ==================================
@@ -323,4 +366,49 @@ QString LlamaEngine::readFile(const QString &path) {
   const QString name = QFileInfo(path).fileName();
   return QStringLiteral("📎 **") + name + QStringLiteral("**\n```\n") +
          QString::fromUtf8(f.readAll()) + QStringLiteral("\n```");
+}
+
+static QString contextFilePath() {
+  const QString dir =
+      QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+  QDir().mkpath(dir);
+  return dir + "/context.json";
+}
+
+bool LlamaEngine::saveContext() {
+  bool ok = false;
+  QMetaObject::invokeMethod(
+      m_worker, "saveHistory", Qt::BlockingQueuedConnection,
+      Q_RETURN_ARG(bool, ok), Q_ARG(QString, contextFilePath()));
+  return ok;
+}
+
+bool LlamaEngine::loadContext() {
+  bool ok = false;
+  QMetaObject::invokeMethod(
+      m_worker, "loadHistory", Qt::BlockingQueuedConnection,
+      Q_RETURN_ARG(bool, ok), Q_ARG(QString, contextFilePath()));
+  if (!ok)
+    return false;
+
+  // Забираем восстановленную историю из worker-потока
+  QVariantList msgs;
+  QMetaObject::invokeMethod(m_worker, "historyToVariant",
+                            Qt::BlockingQueuedConnection,
+                            Q_RETURN_ARG(QVariantList, msgs));
+
+  emit historyRestored(msgs);
+  return true;
+}
+
+QVariantList LlamaWorker::historyToVariant() const {
+  QVariantList out;
+  out.reserve(static_cast<int>(history.size()));
+  for (const auto &m : history) {
+    QVariantMap o;
+    o["role"] = QString::fromStdString(m.first);
+    o["text"] = QString::fromStdString(m.second);
+    out.append(o);
+  }
+  return out;
 }

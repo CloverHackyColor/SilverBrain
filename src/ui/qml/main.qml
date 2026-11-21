@@ -17,9 +17,12 @@ ApplicationWindow {
 
         // ================= Панель настроек =================
         ColumnLayout {
-            Layout.preferredWidth: 70
+            Layout.minimumWidth: 200
+            Layout.maximumWidth: 200
             Layout.fillHeight: true
+            Layout.fillWidth: false
             spacing: 10
+
 
             Label { text: "Настройки"; font.bold: true; color: "#26251f" }
 
@@ -62,6 +65,19 @@ ApplicationWindow {
                     var n = Number.fromLocaleString(Qt.locale(), text.replace(/\s/g, ""))
                     if (isNaN(n)) return value
                     return Math.min(to, Math.max(from, Math.round(Math.log2(n))))
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    text: "Save ctx"
+                    onClicked: llamaEngine.saveContext()
+                }
+                Button {
+                    text: "Load ctx"
+                    enabled: !llamaEngine.busy && !llamaEngine.loading
+                    onClicked: llamaEngine.loadContext()
                 }
             }
 
@@ -197,10 +213,11 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
 
-                    TextField {
+                    TextArea {
                         id: inputField
                         wrapMode: TextArea.Wrap
                         Layout.fillWidth: true
+                        Layout.maximumHeight: 160  
                         placeholderTextColor: "#a09d94"
                         color: "#26251f"
                         background: Rectangle {
@@ -210,6 +227,14 @@ ApplicationWindow {
                         }
                         enabled: !llamaEngine.busy
                         placeholderText: "Type your message..."
+                          // Отправка — Cmd+Enter / Ctrl+Enter или кнопкой
+                        Keys.onPressed: (event) => {
+                            if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) &&
+                                (event.modifiers & (Qt.MetaModifier | Qt.ControlModifier))) {
+                                sendMessage()
+                                event.accepted = true
+                            }
+                        }                      
                     }
                     FileDialog {
                         id: attachDialog
@@ -287,6 +312,11 @@ ApplicationWindow {
         }
         function onGenerationError(message) {
             chatModel.appendToLast("[Ошибка] " + message)
+        }
+        function onHistoryRestored(msgs) {
+            chatModel.clear()
+            for (var i = 0; i < msgs.length; i++)
+                chatModel.append({ role: msgs[i].role, text: msgs[i].text })
         }
     }
 }
