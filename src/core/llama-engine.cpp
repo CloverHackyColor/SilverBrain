@@ -31,47 +31,58 @@ LlamaWorker::~LlamaWorker() {
 }
 
 bool LlamaWorker::ensureLoaded() {
-    if (model && context && sampler)
+    if (model && context)
         return true;
     emit generationError(QStringLiteral("Model is not loaded"));
     return false;
 }
 
-void LlamaWorker::load(const QString &modelPath) {
-    if (model) { // защита от повторной загрузки
-        emit modelLoaded(true, {});
-        return;
-    }
+void LlamaWorker::load(const QString &modelPath, int nCtx) {
 
-    llama_backend_init(); // один раз на процесс — вызов тут, где он единственный
-
-    llama_model_params modelParams = llama_model_default_params();
-    modelParams.n_gpu_layers = 99; // задействовать GPU, если он есть
-
-    model = llama_model_load_from_file(modelPath.toStdString().c_str(), modelParams);
-    if (!model) {
-        emit modelLoaded(false, QStringLiteral("Failed to load model"));
-        return;
-    }
-    vocab = llama_model_get_vocab(model);
-
-    llama_context_params ctxParams = llama_context_default_params();
-    ctxParams.n_ctx   = 8192;
-    ctxParams.n_batch = 512;
-
-    context = llama_init_from_model(model, ctxParams);
-    if (!context) {
-        emit modelLoaded(false, QStringLiteral("Failed to create context"));
-        return;
-    }
-
-    // Сэмплер: раньше оставался nullptr — это был segfault на первом sample()
-    llama_sampler_chain_params sp = llama_sampler_chain_default_params();
-    sampler = llama_sampler_chain_init(sp);
-    llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.8f));
-    llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-
+  if (model) { // защита от повторной загрузки
     emit modelLoaded(true, {});
+    return;
+  }
+  stopRequested.store(false);
+
+  llama_backend_init(); // один раз на процесс — вызов тут, где он единственный
+
+  llama_model_params modelParams = llama_model_default_params();
+  modelParams.n_gpu_layers = 99; // задействовать GPU, если он есть
+
+  modelParams.progress_callback = [](float progress, void *user) -> bool {
+    auto *w = static_cast<LlamaWorker *>(user);
+    emit w->loadProgress(progress);
+    return !w->stopRequested.load();
+  };
+  modelParams.progress_callback_user_data = this;
+
+  model =
+      llama_model_load_from_file(modelPath.toStdString().c_str(), modelParams);
+  if (!model) {
+    emit modelLoaded(false, QStringLiteral("Failed to load model"));
+    return;
+  }
+  vocab = llama_model_get_vocab(model);
+
+  llama_context_params ctxParams = llama_context_default_params();
+  ctxParams.n_ctx = static_cast<uint32_t>(nCtx);
+  ctxParams.n_batch = 512;
+
+  context = llama_init_from_model(model, ctxParams);
+  if (!context) {
+    emit modelLoaded(false, QStringLiteral("Failed to create context"));
+    return;
+  }
+
+  // Сэмплер: раньше оставался nullptr — это был segfault на первом sample()
+  // llama_sampler_chain_params sp = llama_sampler_chain_default_params();
+  // sampler = llama_sampler_chain_init(sp);
+  // llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.8f));
+  // llama_sampler_chain_add(sampler,
+  // llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+  emit modelLoaded(true, {});
 }
 
 std::string LlamaWorker::buildPrompt() const {
@@ -91,96 +102,135 @@ std::string LlamaWorker::buildPrompt() const {
     return out;
 }
 
-void LlamaWorker::generateAsync(const QString &prompt) {
-    if (!ensureLoaded())
+void LlamaWorker::generateAsync(const QString &prompt, float temperature,
+                                float repeatPenalty, float presencePenalty,
+                                float frequencyPenalty) {
+  if (!ensureLoaded())
+    return;
+
+  // Пересоздаём сэмплер на каждый ход — настройки применяются сразу, без
+  // перезагрузки
+  if (sampler)
+    llama_sampler_free(sampler);
+  llama_sampler_chain_params sp = llama_sampler_chain_default_params();
+  sampler = llama_sampler_chain_init(sp);
+  if (repeatPenalty != 1.0f || presencePenalty != 0.0f ||
+      frequencyPenalty != 0.0f)
+    llama_sampler_chain_add(
+        sampler, llama_sampler_init_penalties(
+                     static_cast<int32_t>(llama_vocab_n_tokens(vocab)),
+                     64,               // penalty_last_n: окно последних токенов
+                     repeatPenalty,    // penalty_repeat
+                     frequencyPenalty, // penalty_freq
+                     presencePenalty)); // penalty_present
+  llama_sampler_chain_add(sampler, llama_sampler_init_temp(temperature));
+  llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+  stopRequested.store(false);
+
+  history.emplace_back("user", prompt.toStdString());
+
+  const int32_t nCtx = static_cast<int32_t>(llama_n_ctx(context));
+
+  // Формируем промпт из всей истории; если он с запасом на ответ не влезает
+  // в контекст — выбрасываем самые старые реплики и пересобираем заново.
+  std::vector<llama_token> tokens;
+  while (true) {
+    const std::string formatted = buildPrompt();
+    if (formatted.empty()) {
+      emit (QStringLiteral("Failed to build chat template"));
+      return;
+    }
+    const bool addSpecial =
+        (history.size() == 1); // BOS только в начале диалога
+    // Верхняя оценка: токенов не больше, чем байтов в UTF-8 (+пара на
+    // спец-токены)
+    tokens.resize(formatted.size() + 2);
+    int n = llama_tokenize(
+        vocab, formatted.c_str(), static_cast<int32_t>(formatted.size()),
+        tokens.data(), static_cast<int32_t>(tokens.size()), addSpecial, true);
+    if (n < 0) {
+      // Не хватило буфера: API сообщает требуемый размер со знаком минус
+      tokens.resize(static_cast<size_t>(-n));
+      n = llama_tokenize(vocab, formatted.c_str(),
+                         static_cast<int32_t>(formatted.size()), tokens.data(),
+                         static_cast<int32_t>(tokens.size()), addSpecial, true);
+      if (n < 0) {
+        emit generationError(QStringLiteral("Tokenization failed"));
         return;
+      }
+    }
+    if (n == 0) {
+      emit generationError(QStringLiteral("Empty prompt after template"));
+      return;
+    }
+    tokens.resize(static_cast<size_t>(n));
 
-    history.emplace_back("user", prompt.toStdString());
+    const int64_t maxNew = kMaxNewTokens;
+    if (static_cast<int64_t>(n) + maxNew <= nCtx - kCtxReserve)
+      break; // влезает — работаем
+    if (history.size() <= 1) {
+      emit generationError(QStringLiteral("Prompt too long: %1 tokens, ctx %2")
+                               .arg(n)
+                               .arg(nCtx));
+      return; // вместо decode через край
+    }
+    history.erase(history.begin());
+  }
 
-    const int32_t nCtx = static_cast<int32_t>(llama_n_ctx(context));
+  // Каждый ход начинаем «с чистого листа»: чистим KV-кэш и прогоняем
+  // всю историю заново. Проще и надёжнее, чем инкрементальный кэш, —
+  // оптимальность можно добавить позже.
+  llama_memory_clear(llama_get_memory(context), /*data=*/true);
 
-    // Формируем промпт из всей истории; если он с запасом на ответ не влезает
-    // в контекст — выбрасываем самые старые реплики и пересобираем заново.
-    std::vector<llama_token> tokens;
-    while (true) {
-        const std::string formatted = buildPrompt();
-        if (formatted.empty()) {
-            emit generationError(QStringLiteral("Failed to build chat template"));
-            return;
-        }
-        const bool addSpecial = (history.size() == 1); // BOS только в начале диалога
-        // Верхняя оценка: токенов не больше, чем байтов в UTF-8 (+пара на спец-токены)
-        tokens.resize(formatted.size() + 2);
-        int n = llama_tokenize(vocab, formatted.c_str(),
-                                    static_cast<int32_t>(formatted.size()),
-                                    tokens.data(), static_cast<int32_t>(tokens.size()), addSpecial, true);
-        if (n < 0) {
-            // Не хватило буфера: API сообщает требуемый размер со знаком минус
-            tokens.resize(static_cast<size_t>(-n));
-            n = llama_tokenize(vocab, formatted.c_str(),
-                               static_cast<int32_t>(formatted.size()),
-                               tokens.data(), static_cast<int32_t>(tokens.size()),
-                               addSpecial, true);
-            if (n < 0) {
-                emit generationError(QStringLiteral("Tokenization failed"));
-                return;
-            }
-        }
-        if (n == 0) {
-            emit generationError(QStringLiteral("Empty prompt after template"));
-            return;
-        }
-        tokens.resize(static_cast<size_t>(n));
+  // Промпт может быть длиннее n_batch — декодируем порциями.
+  // llama_batch_get_one продолжит позиции автоматически, куски лягут подряд.
+  const int32_t nBatch = static_cast<int32_t>(llama_n_batch(context));
+  const int32_t nTok = static_cast<int32_t>(tokens.size());
+  for (int32_t pos = 0; pos < nTok; pos += nBatch) {
+    const int32_t chunk = std::min(nBatch, nTok - pos);
+    llama_batch b = llama_batch_get_one(tokens.data() + pos, chunk);
+    if (llama_decode(context, b) != 0) {
+      emit generationError(QStringLiteral("llama_decode failed"));
+      return;
+    }
+  }
 
-        const int64_t maxNew = kMaxNewTokens;
-        if (static_cast<int64_t>(n) + maxNew <= nCtx - kCtxReserve ||
-            history.size() <= 1) {
-            break;
-        }
-        history.erase(history.begin());
+  std::string full;
+  std::string pending; // байты, ожидающие «досбора» UTF-8
+  for (int i = 0; i < kMaxNewTokens; ++i) {
+    if (stopRequested.load()) {
+      stopRequested.store(false);
+      break;
+    }
+    llama_token tok = llama_sampler_sample(sampler, context, -1);
+    if (llama_vocab_is_eog(vocab, tok))
+      break;
+
+    char piece[512];
+    int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, false);
+    if (n > 0) {
+      pending.append(piece, n);
+      const QString text = takeDecodableUtf8(pending);
+      if (!text.isEmpty()) {
+        full += text.toStdString();
+        emit tokenReceived(text);
+      }
     }
 
-    // Каждый ход начинаем «с чистого листа»: чистим KV-кэш и прогоняем
-    // всю историю заново. Проще и надёжнее, чем инкрементальный кэш, —
-    // оптимальность можно добавить позже.
-    llama_memory_clear(llama_get_memory(context), /*data=*/true);
+    llama_batch next = llama_batch_get_one(&tok, 1);
+    if (llama_decode(context, next) != 0)
+      break;
+  }
 
-    llama_batch batch = llama_batch_get_one(tokens.data(),
-                                            static_cast<int32_t>(tokens.size()));
-    if (llama_decode(context, batch) != 0) {
-        emit generationError(QStringLiteral("llama_decode failed"));
-        return;
-    }
+  // Хвост недобранных байтов: отдаём как есть (редкий случай обрыва посреди
+  // символа)
+  if (!pending.empty())
+    full += QString::fromUtf8(pending.data(), static_cast<int>(pending.size()))
+                .toStdString();
 
-    std::string full;
-    std::string pending; // байты, ожидающие «дозбора» UTF-8
-    for (int i = 0; i < kMaxNewTokens; ++i) {
-        llama_token tok = llama_sampler_sample(sampler, context, -1);
-        if (llama_vocab_is_eog(vocab, tok))
-            break;
-
-        char piece[512];
-        int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, false);
-        if (n > 0) {
-            pending.append(piece, n);
-            const QString text = takeDecodableUtf8(pending);
-            if (!text.isEmpty()) {
-                full += text.toStdString();
-                emit tokenReceived(text);
-            }
-        }
-
-        llama_batch next = llama_batch_get_one(&tok, 1);
-        if (llama_decode(context, next) != 0)
-            break;
-    }
-
-    // Хвост недобранных байтов: отдаём как есть (редкий случай обрыва посреди символа)
-    if (!pending.empty())
-        full += QString::fromUtf8(pending.data(), static_cast<int>(pending.size())).toStdString();
-
-    history.emplace_back("assistant", full);
-    emit generationFinished(QString::fromStdString(full));
+  history.emplace_back("assistant", full);
+  emit generationFinished(QString::fromStdString(full));
 }
 
 // ============================ LlamaEngine ==================================
@@ -191,15 +241,23 @@ LlamaEngine::LlamaEngine(QObject *parent) : QObject(parent) {
 
     connect(this, &LlamaEngine::loadRequested,     m_worker, &LlamaWorker::load,     Qt::QueuedConnection);
     connect(this, &LlamaEngine::generateRequested, m_worker, &LlamaWorker::generateAsync, Qt::QueuedConnection);
-    connect(this, &LlamaEngine::clearHistoryRequested, m_worker, &LlamaWorker::clearHistory, Qt::QueuedConnection); 
+    connect(this, &LlamaEngine::clearHistoryRequested, m_worker, &LlamaWorker::clearHistory, Qt::QueuedConnection);
 
+    connect(m_worker, &LlamaWorker::loadProgress, this, &LlamaEngine::setLoadProgress);
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::modelLoaded);
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::onWorkFinished);
     connect(m_worker, &LlamaWorker::tokenReceived,     this, &LlamaEngine::tokenReceived);
     connect(m_worker, &LlamaWorker::generationFinished,this, &LlamaEngine::generationFinished);
     connect(m_worker, &LlamaWorker::generationFinished,this, &LlamaEngine::onWorkFinished);
     connect(m_worker, &LlamaWorker::generationError,   this, &LlamaEngine::generationError);
-    connect(m_worker, &LlamaWorker::generationError,   this, &LlamaEngine::onWorkFinished);
+    connect(m_worker, &LlamaWorker::generationError,   this, &LlamaEngine::onWorkFinished);    
+    connect(m_worker, &LlamaWorker::modelLoaded, this,
+            [this](bool, const QString &) {
+              if (m_loading) {
+                m_loading = false;
+                emit loadingChanged();
+              }
+            });
 
     m_thread.start();
 }
@@ -210,18 +268,14 @@ LlamaEngine::~LlamaEngine() {
 }
 
 void LlamaEngine::onWorkFinished() {
-    if (m_busy) {
-        m_busy = false;
-        emit busyChanged();
-    }
-}
-
-void LlamaEngine::loadModel(const QString &modelPath) {
-    if (m_busy || modelPath.isEmpty())
-        return;
-    m_busy = true;
+  if (m_loading) {
+    m_loading = false;
+    emit loadingChanged();
+  }
+  if (m_busy) {
+    m_busy = false;
     emit busyChanged();
-    emit loadRequested(modelPath);
+  }
 }
 
 void LlamaEngine::generateAsync(const QString &prompt) {
@@ -229,10 +283,44 @@ void LlamaEngine::generateAsync(const QString &prompt) {
         return;
     m_busy = true;
     emit busyChanged();
-    emit generateRequested(prompt);
+    emit generateRequested(prompt, m_temperature, m_repeatPenalty,
+                           m_presencePenalty, m_frequencyPenalty);
 }
 
 
 void LlamaEngine::clearHistory() {
     emit clearHistoryRequested();
+}
+
+// llama-engine.cpp
+void LlamaEngine::setLoadProgress(float p) {
+  if (!m_loading)
+    return; // игнорируем хвостовые сигналы после завершения
+  m_loadProgress = p;
+  emit loadProgressChanged();
+}
+
+void LlamaEngine::loadModel(const QString &modelPath) {
+  if (m_busy || modelPath.isEmpty())
+    return;
+  m_busy = true;
+  m_loading = true; // начинаем отслеживать именно загрузку
+  m_loadProgress = 0.0;
+  emit busyChanged();
+  emit loadingChanged();
+  emit loadProgressChanged();
+  emit loadRequested(modelPath, m_contextSize);
+}
+
+void LlamaEngine::stopGeneration() { m_worker->stopRequested.store(true); }
+
+QString LlamaEngine::readFile(const QString &path) {
+  QFile f(path);
+  if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+    return QStringLiteral("[Не удалось открыть файл: %1]").arg(path);
+  if (f.size() > 512 * 1024)
+    return QStringLiteral("[Файл слишком большой: %1 КБ]").arg(f.size() / 1024);
+  const QString name = QFileInfo(path).fileName();
+  return QStringLiteral("📎 **") + name + QStringLiteral("**\n```\n") +
+         QString::fromUtf8(f.readAll()) + QStringLiteral("\n```");
 }

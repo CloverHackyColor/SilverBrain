@@ -13,12 +13,13 @@ Rectangle {
     anchors.right: isUser ? parent.right : undefined
     anchors.left: isUser ? undefined : parent.left
 
-    Text {
-        id: bubbleText
-        anchors.fill: parent
-        anchors.margins: 12
-        wrapMode: Text.Wrap
-        color: isUser ? "black" : "#26251f"
-        text: messageText
+    TextEdit {
+        id: msgText
+        readOnly: true
+        selectByMouse: true              // выделение мышью — и Cmd+C заработал
+        textFormat: Text.MarkdownText    // **жирный**, код, списки, заголовки
+        wrapMode: TextEdit.Wrap
+        color: model.role === "user" ? "#1f4fa3" : "#26251f"
+        text: model.text
     }
 }
