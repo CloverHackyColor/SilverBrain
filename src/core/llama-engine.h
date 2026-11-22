@@ -35,7 +35,10 @@ public:
     std::atomic<bool> stopRequested{false};
 
   public slots:
-    Q_INVOKABLE void clearHistory() { history.clear(); }
+    Q_INVOKABLE void clearHistory() { 
+      history.clear(); 
+      channelHold.clear();
+    }
 
     bool saveHistory(const QString &path);
     bool loadHistory(const QString &path);
@@ -61,6 +64,7 @@ public:
     llama_sampler     *sampler = nullptr;
     const llama_vocab *vocab   = nullptr;
     mtmd_context *mctx = nullptr;
+    std::string channelHold;
 
     // Память диалога: пары (роль, текст). Именно это позволяет модели
     // «помнить» предыдущие ходы, а не начинать каждый ответ с нуля.

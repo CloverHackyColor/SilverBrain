@@ -1,6 +1,7 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+//#include <QQuickStyle>
 
 #include "core/chat-model.h"
 #include "core/llama-engine.h"
@@ -25,8 +26,9 @@ SilverBrain/
 */
 
 int main(int argc, char *argv[]) {
+    qputenv("QT_QUICK_CONTROLS_STYLE", QByteArrayLiteral("Fusion"));
     QGuiApplication app(argc, argv);
-
+    //QQuickStyle::setStyle(QStringLiteral("Fusion"));
     QQmlApplicationEngine engine;
 
     LlamaEngine llamaEngine;

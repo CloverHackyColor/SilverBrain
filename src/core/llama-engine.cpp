@@ -34,6 +34,33 @@ namespace {
       "{% endif %}{% endfor %}"
       "{% if add_generation_prompt %}{{ '<start_of_turn>model\\n' }}{% endif %}";    
 
+  constexpr std::string_view kChannelTags[] = {"<|channel>thought", "<|channel>",
+                                              "<channel|>"};
+
+  // Убирает маркеры каналов из потока; если маркер разрезан между токенами,
+  // хвост придерживается в hold до следующего куска.
+  QString stripChannels(std::string &hold, const QString &incoming) {
+    hold += incoming.toStdString();
+
+    // сколько байт безопасно отдать: хвост не должен совпадать
+    // с началом какого-либо маркера
+    size_t keep = hold.size();
+    for (auto t : kChannelTags) {
+      const size_t maxK = std::min(t.size() - 1, hold.size());
+      for (size_t k = maxK; k > 0; --k)
+        if (hold.compare(hold.size() - k, k, t.substr(0, k)) == 0)
+          keep = std::min(keep, hold.size() - k);
+    }
+    std::string out = hold.substr(0, keep);
+    hold.erase(0, keep);
+
+    for (auto t : kChannelTags) {
+      size_t pos;
+      while ((pos = out.find(t)) != std::string::npos)
+        out.erase(pos, t.size());
+    }
+    return QString::fromUtf8(out.c_str(), static_cast<int>(out.size()));
+  }
 } // namespace
 
 // ============================ LlamaWorker ==================================
@@ -79,6 +106,13 @@ void LlamaWorker::load(const QString &modelPath, const QString &mmprojPath, int 
     return;
   }
   vocab = llama_model_get_vocab(model);
+  { // диагностика: цел ли спец-токен в вашем GGUF
+    std::vector<char> buf(1 << 16);
+    int len = llama_model_meta_val_str(model, "tokenizer.chat_template",
+                                       buf.data(), buf.size());
+    fprintf(stderr, "[chat_template] len=%d\n%.*s\n", len, len > 0 ? len : 0,
+            buf.data());
+  }
 
   llama_context_params ctxParams = llama_context_default_params();
   ctxParams.n_ctx = static_cast<uint32_t>(nCtx);
@@ -109,55 +143,34 @@ void LlamaWorker::load(const QString &modelPath, const QString &mmprojPath, int 
   emit modelLoaded(true, {});
 }
 
-// std::string LlamaWorker::buildPrompt() const {
-//     std::vector<llama_chat_message> msgs;
-//     msgs.reserve(history.size());
-//     for (const auto &[role, content] : history)
-//         msgs.push_back({role.c_str(), content.c_str()});
-
-//     // 1) пробуем метаданные GGUF
-//     std::vector<char> buf(1 << 16);
-//     const char *tmpl = kGemmaTemplate;
-//     if (llama_model_meta_val_str(model, "tokenizer.chat_template",
-//                                 buf.data(), buf.size()) > 0)
-//     tmpl = buf.data();
-
-//     // tmpl = nullptr → берём шаблон из метаданных GGUF (у каждой модели свой)
-//     int32_t n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(),
-//                                           /*add_ass=*/true, nullptr, 0);
-//     if (n < 0 && tmpl != kGemmaTemplate) { // шаблон GGUF не отработал — фолбэк
-//         tmpl = kGemmaTemplate;
-//         n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true,
-//                                       nullptr, 0);
-//     }
-
-//     if (n < 0) return {};
-//     std::string out(static_cast<size_t>(n), '\0');
-//     llama_chat_apply_template(nullptr, msgs.data(), msgs.size(), true,
-//                               out.data(), n);
-//     return out;
-// }
-
 std::string LlamaWorker::buildPrompt() const {
     std::vector<llama_chat_message> msgs;
     msgs.reserve(history.size());
     for (const auto &[role, content] : history)
         msgs.push_back({role.c_str(), content.c_str()});
 
-    // Один и тот же шаблон и для подсчёта длины, и для рендера —
-    // иначе n и фактическая длина разъедутся (вплоть до перезаписи буфера)
+    // 1) пробуем метаданные GGUF
+    std::vector<char> buf(1 << 16);
     const char *tmpl = kGemmaTemplate;
+    if (llama_model_meta_val_str(model, "tokenizer.chat_template",
+                                buf.data(), buf.size()) > 0)
+    tmpl = buf.data();
 
+    // tmpl = nullptr → берём шаблон из метаданных GGUF (у каждой модели свой)
     int32_t n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(),
                                           /*add_ass=*/true, nullptr, 0);
-    if (n < 0)
-        return {};
+    if (n < 0 && tmpl != kGemmaTemplate) { // шаблон GGUF не отработал — фолбэк
+        tmpl = kGemmaTemplate;
+        n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true,
+                                      nullptr, 0);
+    }
+
+    if (n < 0) return {};
     std::string out(static_cast<size_t>(n), '\0');
     llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true,
                               out.data(), n);
     return out;
 }
-
 
 void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath, 
                                 float temperature,
@@ -259,7 +272,12 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
     const bool firstTurn = (history.size() == (hasSystem ? 2u : 1u));
     const bool addSpecial = firstTurn && formatted.rfind("<bos>", 0) != 0;
 
-    mtmd_input_text text{formatted.c_str(), addSpecial, /*parse_special=*/true};
+    //mtmd_input_text text{formatted.c_str(), addSpecial, /*parse_special=*/true};
+    mtmd_input_text text{};
+    text.text        = formatted.c_str();
+    text.text_len    = formatted.size();
+    text.add_special = addSpecial;
+    text.parse_special = true;
     mtmd_input_chunks *chunks = mtmd_input_chunks_init();
     const mtmd_bitmap *bitmaps[1] = { bmp };
     if (mtmd_tokenize(mctx, chunks, &text, bitmaps, 1) != 0) {
@@ -364,6 +382,7 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
   }
   std::string full;
   std::string pending; // байты, ожидающие «досбора» UTF-8
+  channelHold.clear(); // хвост фильтра каналов с прошлого хода не нужен
   for (int i = 0; i < kMaxNewTokens; ++i) {
     if (stopRequested.load()) {
       stopRequested.store(false);
@@ -379,8 +398,11 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
       pending.append(piece, n);
       const QString text = takeDecodableUtf8(pending);
       if (!text.isEmpty()) {
-        full += text.toStdString();
-        emit tokenReceived(text);
+        const QString clean = stripChannels(channelHold, text);
+        if (!clean.isEmpty()) {
+          full += clean.toStdString();
+          emit tokenReceived(clean);
+        }
       }
     }
 
@@ -394,6 +416,13 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
   if (!pending.empty()) {
     full += QString::fromUtf8(pending.data(), static_cast<int>(pending.size()))
                 .toStdString();
+  }
+
+  // ← ВОТ СЮДА: досбор хвоста из stripChannels и добивка full
+  if (!channelHold.empty()) {
+    const QString tail = stripChannels(channelHold, QString());
+    if (!tail.isEmpty())
+      full += tail.toStdString();
   }
 
   history.emplace_back("assistant", full);

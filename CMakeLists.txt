@@ -84,6 +84,7 @@ endif()
 target_link_libraries(SilverBrain
     Qt${QT_VERSION_MAJOR}::Quick
     Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::QuickControls2 
     llama
     mtmd 
 )
