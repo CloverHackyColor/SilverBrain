@@ -11,14 +11,18 @@
 #include <QString>
 #include <QThread>
 #include <QVariantList>
+#include <QImage>
 
 #include <atomic>
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "llama.h"  // достаточно одного include: таргет llama сам экспортирует
                     // нужные include-директории через target_include_directories
+#include "mtmd.h"  
+#include "mtmd-helper.h"                    
 
 // ---------------------------------------------------------------------------
 // Worker — живёт в отдельном QThread и держит ВСЁ состояние llama.cpp.
@@ -32,13 +36,13 @@ public:
 
   public slots:
     Q_INVOKABLE void clearHistory() { history.clear(); }
-    void load(const QString &modelPath, int nCtx);
-    void generateAsync(const QString &prompt, float temperature,
-                       float repeatPenalty, float presencePenalty,
-                       float frequencyPenalty);
+
     bool saveHistory(const QString &path);
     bool loadHistory(const QString &path);
     QVariantList historyToVariant() const;
+    void load(const QString &modelPath, const QString &mmprojPath, int nCtx);
+    void generateAsync(const QString &prompt, const QString &imagePath, float temperature,
+                       float repeatPenalty, float presencePenalty, float frequencyPenalty);
 
   signals:
     void modelLoaded(bool ok, const QString &error);
@@ -56,6 +60,7 @@ public:
     llama_context     *context = nullptr;
     llama_sampler     *sampler = nullptr;
     const llama_vocab *vocab   = nullptr;
+    mtmd_context *mctx = nullptr;
 
     // Память диалога: пары (роль, текст). Именно это позволяет модели
     // «помнить» предыдущие ходы, а не начинать каждый ответ с нуля.
@@ -85,6 +90,9 @@ class LlamaEngine : public QObject {
                    setPresencePenalty NOTIFY presencePenaltyChanged)
     Q_PROPERTY(qreal frequencyPenalty READ frequencyPenalty WRITE
                    setFrequencyPenalty NOTIFY frequencyPenaltyChanged)
+    Q_PROPERTY(QString mmprojPath READ mmprojPath WRITE setMmprojPath NOTIFY mmprojPathChanged)
+    Q_PROPERTY(QString imagePath  READ imagePath  WRITE setImagePath  NOTIFY imagePathChanged)
+
 
   public:
     explicit LlamaEngine(QObject *parent = nullptr);
@@ -106,6 +114,8 @@ class LlamaEngine : public QObject {
     qreal repeatPenalty() const { return m_repeatPenalty; }
     qreal presencePenalty() const { return m_presencePenalty; }
     qreal frequencyPenalty() const { return m_frequencyPenalty; }
+    QString mmprojPath() const { return m_mmprojPath; }
+    QString imagePath()  const { return m_imagePath; }
 
     void setContextSize(int v) {
       if (v != m_contextSize) {
@@ -137,6 +147,19 @@ class LlamaEngine : public QObject {
         emit frequencyPenaltyChanged();
       }
     }
+    void setMmprojPath(const QString &v) {
+      if (v != m_mmprojPath) {
+        m_mmprojPath = v;
+        emit mmprojPathChanged();
+      }
+    }
+    void setImagePath(const QString &v) {
+      if (v != m_imagePath) {
+        m_imagePath = v;
+        emit imagePathChanged();
+      }
+    }
+
 
   signals:
     // Публичные сигналы для QML (просто ретрансляция сигналов worker'а)
@@ -156,10 +179,13 @@ class LlamaEngine : public QObject {
 
     // Внутренние: уводят работу в поток
     void clearHistoryRequested();
-    void loadRequested(const QString &modelPath, int nCtx);
-    void generateRequested(const QString &prompt, float temperature,
-                           float repeatPenalty, float presencePenalty,
-                           float frequencyPenalty);
+    void loadRequested(const QString &modelPath, const QString &mmprojPath, int nCtx);
+    void generateRequested(const QString &prompt, const QString &imagePath, 
+                           float temperature, float repeatPenalty, 
+                           float presencePenalty, float frequencyPenalty);
+    // Для зрения
+    void mmprojPathChanged();
+    void imagePathChanged();                       
 
 
   private slots:
@@ -177,4 +203,6 @@ class LlamaEngine : public QObject {
     qreal m_repeatPenalty = 1.0;
     qreal m_presencePenalty = 0.0;
     qreal m_frequencyPenalty = 0.0;
+    QString m_mmprojPath;
+    QString m_imagePath;
 };

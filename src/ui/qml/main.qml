@@ -160,6 +160,19 @@ ApplicationWindow {
                         enabled: !llamaEngine.busy
                         onClicked: modelFileDialog.open()
                     }
+                    FileDialog {
+                        id: mmprojDialog
+                        title: "Выберите mmproj"
+                        nameFilters: ["GGUF проектор (*.gguf)"]
+                        onAccepted: {
+                            var path = selectedFile.toString()
+                            if (path.startsWith("file://"))
+                                path = decodeURIComponent(path.substring(7))
+                            llamaEngine.mmprojPath = path
+                        }
+                    }
+                    Button { text: "mmproj"; onClicked: mmprojDialog.open() }
+
                     Label { 
                         id: statusLabel; 
                         color: statusLabel.text.startsWith("Ошибка")   ? "#c62828"
@@ -238,20 +251,26 @@ ApplicationWindow {
                     }
                     FileDialog {
                         id: attachDialog
-                        title: "Attach file"
+                        title: "Attach image"
+                        nameFilters: ["Изображения (*.png *.jpg *.jpeg *.webp)"]
                         onAccepted: {
                             var path = selectedFile.toString()
                             if (path.startsWith("file://"))
                                 path = decodeURIComponent(path.substring(7))
-                            inputField.text += llamaEngine.readFile(path)
-                        }  
+                            llamaEngine.imagePath = path
+                        } 
                     }
                     Button {
                         text: "📎"
                         enabled: !llamaEngine.busy
                         onClicked: attachDialog.open()
                     }
-            
+                    Label {
+                        text: llamaEngine.imagePath !== "" ? "🖼 " + llamaEngine.imagePath.split("/").pop() : ""
+                        visible: text !== ""
+                        color: "#2f6feb"
+                        MouseArea { anchors.fill: parent; onClicked: llamaEngine.imagePath = "" }
+                    }     
                     Button {
                         text: "Send"
                         background: Rectangle {
