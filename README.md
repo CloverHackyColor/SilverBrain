@@ -3,9 +3,13 @@ This is crossplatform graphical frontend for llama.cpp. Our fork https://github.
 
 ## Download
 git clone --recurse-submodule https://github.com/CloverHackyColor/SilverBrain.git
+
 cd third_party/llama.cpp
+
 git checkout silver
+
 git pull
+cd ../..
 
 ## To compile
 * cmake --preset macos && cmake --build build 
