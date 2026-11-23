@@ -1,6 +1,8 @@
 #include "llama-engine.h"
 
 #include <utility>
+#include <chrono>
+#include <cstdio>
 
 namespace {
 
@@ -61,6 +63,35 @@ namespace {
     }
     return QString::fromUtf8(out.c_str(), static_cast<int>(out.size()));
   }
+
+  // Сколько позиций занимает последовательность 0 в памяти контекста.
+  // В новых llama.cpp подсчёт ячеек заменён на позиции памяти.
+  int32_t usedTokens(llama_context *ctx) {
+    llama_pos pmax = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+    return pmax < 0 ? 0 : static_cast<int32_t>(pmax) + 1;
+  }
+
+  // Обработка токенов через новый ext-batch API. Позиции ставим явно:
+  // ext-батч не отслеживает их сам. Логиты выдаёт только последний токен
+  // группы — ровно так же, как раньше вёл себя llama_batch_get_one.
+  bool decodeTokens(llama_context *ctx, const llama_token *tokens, int32_t n,
+                    llama_pos firstPos) {
+    llama_batch_ext *b = llama_batch_ext_init(ctx);
+    if (!b)
+      return false;
+    for (int32_t i = 0; i < n; ++i) {
+      const int32_t idx = llama_batch_ext_add_token(b, 0, tokens[i]);
+      llama_pos p = firstPos + i;
+      llama_batch_ext_set_pos(b, idx, &p);
+      if (i == n - 1)
+        llama_batch_ext_set_output_logits(b, idx, true);
+    }
+    const int32_t r = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, b);
+    llama_batch_ext_free(b);
+    return r == 0;
+  }
+
+
 } // namespace
 
 // ============================ LlamaWorker ==================================
@@ -146,8 +177,11 @@ void LlamaWorker::load(const QString &modelPath, const QString &mmprojPath, int 
 std::string LlamaWorker::buildPrompt() const {
     std::vector<llama_chat_message> msgs;
     msgs.reserve(history.size());
-    for (const auto &[role, content] : history)
-        msgs.push_back({role.c_str(), content.c_str()});
+    for (const auto &[role, content] : history) {
+      if (role == "stats")
+        continue; // статистику в контекст модели не отдаём
+      msgs.push_back({role.c_str(), content.c_str()});
+    }
 
     // 1) пробуем метаданные GGUF
     std::vector<char> buf(1 << 16);
@@ -225,9 +259,10 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
     const int w = rgb.width();
     const int h = rgb.height();
     std::vector<unsigned char> packed(static_cast<size_t>(w) * h * 3);
-    for (int y = 0; y < h; ++y)
+    for (int y = 0; y < h; ++y) {
       memcpy(packed.data() + static_cast<size_t>(y) * w * 3,
              rgb.constScanLine(y), static_cast<size_t>(w) * 3);
+    }
 
     // mtmd_bitmap_init копирует данные внутрь — packed можно не хранить
     bmp = mtmd_bitmap_init(static_cast<uint32_t>(w), static_cast<uint32_t>(h),
@@ -244,22 +279,26 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
   stopRequested.store(false);
 
   const int32_t nCtx = static_cast<int32_t>(llama_n_ctx(context));
+  llama_pos nextPos = usedTokens(context); // первая свободная позиция в памяти
 
-    const std::string imageMarker =
+  int32_t nPromptTokens = 0;
+  double promptSec = 0.0;
+
+  const std::string imageMarker =
       mctx ? mtmd_get_marker(mctx) : mtmd_default_marker();
 
 
-
+  const auto promptStart = std::chrono::steady_clock::now();
   if (hasImage) {
     // маркер нужен только в промпте этого хода — добавили, применили, сняли
     history.back().second += " ";
     history.back().second += imageMarker;
 
     const std::string formatted = buildPrompt();
-    fprintf(stderr, "[prompt tail] ...%s\n[marker] %s\n",
-            formatted.substr(formatted.size() > 200 ? formatted.size() - 200 : 0).c_str(),
-            imageMarker.c_str());
-
+    // fprintf(stderr, "[prompt tail] ...%s\n[marker] %s\n",
+    //         formatted.substr(formatted.size() > 200 ? formatted.size() - 200 : 0).c_str(),
+    //         imageMarker.c_str());
+    
 
     history.back().second = userText; // маркер из истории убрали
     if (formatted.empty()) {
@@ -267,7 +306,7 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
       emit generationError(QStringLiteral("Failed to build chat template"));
       return;
     }
-
+    
     const bool hasSystem = !history.empty() && history.front().first == "system";
     const bool firstTurn = (history.size() == (hasSystem ? 2u : 1u));
     const bool addSpecial = firstTurn && formatted.rfind("<bos>", 0) != 0;
@@ -290,8 +329,10 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
 
     // Сколько контекста съест этот ход: текст + картинка (embd-токены)
     size_t total = 0;
-    for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i)
+    for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
       total += mtmd_input_chunk_get_n_tokens(mtmd_input_chunks_get(chunks, i));
+    }
+    nPromptTokens = static_cast<int32_t>(total);
     if (static_cast<int64_t>(total) + kMaxNewTokens > nCtx - kCtxReserve) {
       mtmd_input_chunks_free(chunks);
       emit generationError(QStringLiteral("Prompt with image too long: %1 tokens, ctx %2")
@@ -302,6 +343,7 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
     llama_memory_clear(llama_get_memory(context), true);
     llama_pos nPast = 0;
     const int32_t nBatch = static_cast<int32_t>(llama_n_batch(context));
+    emit promptProgress(0);
     if (mtmd_helper_eval_chunks(mctx, context, chunks, /*n_past=*/0,
                                 /*seq_id=*/0, nBatch, /*logits_last=*/true,
                                 &nPast) != 0) {
@@ -309,8 +351,15 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
       emit generationError(QStringLiteral("Image eval failed"));
       return;
     }
+    emit promptProgress(100);
+    nextPos = usedTokens(context); // позиция теперь за эмбеддингами картинки
+
+    double promptSec = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - promptStart).count();
+    int32_t freeCells = static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
+    emit contextFree(freeCells);
     mtmd_input_chunks_free(chunks);
-  } else {
+  } else {  // Текстовая ветка
 
     // Формируем промпт из всей истории; если он с запасом на ответ не влезает
     // в контекст — выбрасываем самые старые реплики и пересобираем заново.
@@ -321,7 +370,7 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
         emit generationError(QStringLiteral("Failed to build chat template"));
         return;
       }
-
+      
       const bool hasSystem = !history.empty() && history.front().first == "system";
       const bool firstTurn = (history.size() == (hasSystem ? 2u : 1u));
       const bool addSpecial = firstTurn && formatted.rfind("<bos>", 0) != 0;
@@ -368,21 +417,32 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
     llama_memory_clear(llama_get_memory(context), /*data=*/true);
 
     // Промпт может быть длиннее n_batch — декодируем порциями.
-    // llama_batch_get_one продолжит позиции автоматически, куски лягут подряд.
     const int32_t nBatch = static_cast<int32_t>(llama_n_batch(context));
     const int32_t nTok = static_cast<int32_t>(tokens.size());
-    for (int32_t pos = 0; pos < nTok; pos += nBatch) {
+    for (int32_t pos = 0; pos < nTok; ) {
       const int32_t chunk = std::min(nBatch, nTok - pos);
-      llama_batch b = llama_batch_get_one(tokens.data() + pos, chunk);
-      if (llama_decode(context, b) != 0) {
-        emit generationError(QStringLiteral("llama_decode failed"));
+      if (!decodeTokens(context, tokens.data() + pos, chunk, nextPos)) {
+        emit generationError(QStringLiteral("llama_process failed"));
         return;
       }
+      nextPos += chunk;
+      pos += chunk;
+      emit promptProgress(static_cast<int>(pos * 100 / nTok));
     }
+    emit promptProgress(100);
+    nPromptTokens = nTok;
+    promptSec = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - promptStart).count();
+    int32_t freeCells = static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
+    emit contextFree(freeCells);
+
   }
+
   std::string full;
   std::string pending; // байты, ожидающие «досбора» UTF-8
   channelHold.clear(); // хвост фильтра каналов с прошлого хода не нужен
+  const auto genStart = std::chrono::steady_clock::now();
+  int nGen = 0;
   for (int i = 0; i < kMaxNewTokens; ++i) {
     if (stopRequested.load()) {
       stopRequested.store(false);
@@ -405,10 +465,21 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
         }
       }
     }
+    ++nGen;
+    if ((nGen & 15) == 0) { // каждые 16 токенов — не спамим сигналами
+      const double sec = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - genStart).count();
+      if (sec > 0.05)
+        emit genSpeed(nGen / sec);
+      emit contextFree(static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context));
+    }
 
-    llama_batch next = llama_batch_get_one(&tok, 1);
-    if (llama_decode(context, next) != 0)
-      break;
+    if (!decodeTokens(context, &tok, 1, nextPos)) {
+      emit generationError(QStringLiteral("llama_process failed"));
+      return;
+    }
+    ++nextPos;
+
   }
 
   // Хвост недобранных байтов: отдаём как есть (редкий случай обрыва посреди
@@ -426,6 +497,20 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
   }
 
   history.emplace_back("assistant", full);
+
+  const double genSec = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - genStart).count();
+  const double tps = genSec > 0 ? nGen / genSec : 0.0;
+  const int32_t freeFinal = static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
+
+  char statLine[256];
+  snprintf(statLine, sizeof(statLine),
+           "Промпт: %d ток. за %.1f с · Ответ: %d ток. за %.1f с (%.1f ток/с) · Свободно контекста: %d",
+           nPromptTokens, promptSec, nGen, genSec, tps, freeFinal);
+
+  history.emplace_back("stats", statLine);
+  emit statsAppended(QString::fromUtf8(statLine));
+
   emit generationFinished(QString::fromStdString(full));
 }
 
@@ -478,14 +563,19 @@ LlamaEngine::LlamaEngine(QObject *parent) : QObject(parent) {
     connect(this, &LlamaEngine::generateRequested, m_worker, &LlamaWorker::generateAsync, Qt::QueuedConnection);
     connect(this, &LlamaEngine::clearHistoryRequested, m_worker, &LlamaWorker::clearHistory, Qt::QueuedConnection);
 
-    connect(m_worker, &LlamaWorker::loadProgress, this, &LlamaEngine::setLoadProgress);
+    connect(m_worker, &LlamaWorker::loadProgress,      this, &LlamaEngine::setLoadProgress);
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::modelLoaded);
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::onWorkFinished);
     connect(m_worker, &LlamaWorker::tokenReceived,     this, &LlamaEngine::tokenReceived);
     connect(m_worker, &LlamaWorker::generationFinished,this, &LlamaEngine::generationFinished);
     connect(m_worker, &LlamaWorker::generationFinished,this, &LlamaEngine::onWorkFinished);
     connect(m_worker, &LlamaWorker::generationError,   this, &LlamaEngine::generationError);
-    connect(m_worker, &LlamaWorker::generationError,   this, &LlamaEngine::onWorkFinished);    
+    connect(m_worker, &LlamaWorker::generationError,   this, &LlamaEngine::onWorkFinished);   
+    connect(m_worker, &LlamaWorker::promptProgress,    this, &LlamaEngine::promptProgress);
+    connect(m_worker, &LlamaWorker::genSpeed,          this, &LlamaEngine::genSpeed);
+    connect(m_worker, &LlamaWorker::contextFree,       this, &LlamaEngine::contextFree);
+    connect(m_worker, &LlamaWorker::statsAppended,     this, &LlamaEngine::statsAppended);
+ 
     connect(m_worker, &LlamaWorker::modelLoaded, this,
             [this](bool, const QString &) {
               if (m_loading) {

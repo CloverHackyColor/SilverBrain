@@ -199,6 +199,35 @@ ApplicationWindow {
                         }
                     }
                 }
+                ProgressBar {
+                    id: promptBar
+                    visible: false
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 4
+                    from: 0
+                    to: 100
+                    background: null
+                    contentItem: Item {
+                        Rectangle {
+                            width: promptBar.visualPosition * parent.width
+                            height: parent.height
+                            radius: 2
+                            color: "#2e7d32"
+                        }
+                    }
+                }
+                Label {
+                    id: liveStats
+                    visible: text !== ""
+                    font.pixelSize: 11
+                    color: "#8a877e"
+                }
+                Label {
+                    id: freeLabel
+                    visible: text !== ""
+                    font.pixelSize: 11
+                    color: "#8a877e"
+                }
 
 
                 ListView {
@@ -211,11 +240,31 @@ ApplicationWindow {
                     spacing: 8
                     
 
-                    delegate: ChatBubble {
+                    delegate: Loader {
+                        required property var model
                         width: chatList.width - 32
-                        isUser: model.role === "user"   // model доступен ЗДЕСЬ, внутри делегата
-                        messageText: model.text
+                        sourceComponent: model.role === "stats" ? statsRow : bubble
+                        Component {
+                            id: bubble
+                            ChatBubble {
+                                width: parent.width
+                                isUser: model.role === "user"
+                                messageText: model.text
+                            }
+                        }
+                        Component {
+                            id: statsRow
+                            Label {
+                                width: parent.width
+                                horizontalAlignment: Text.AlignHCenter
+                                font.pixelSize: 11
+                                color: "#8a877e"
+                                text: model.text
+                                wrapMode: Text.WrapAnywhere
+                            }
+                        }
                     }
+
 
                     // Автопрокрутка вниз при новых токенах
                     onCountChanged: positionViewAtEnd()
@@ -326,8 +375,8 @@ ApplicationWindow {
             chatModel.appendToLast(piece)
         }
         function onGenerationFinished(fullText) {
-            // Текст уже досыпал токенами; здесь ничего дополнять не нужно.
-            // Место под будущие пост-обработки (подсветку, автосохранение и т.п.)
+            promptBar.visible = false
+            liveStats.text = ""
         }
         function onGenerationError(message) {
             chatModel.appendToLast("[Ошибка] " + message)
@@ -337,5 +386,19 @@ ApplicationWindow {
             for (var i = 0; i < msgs.length; i++)
                 chatModel.append({ role: msgs[i].role, text: msgs[i].text })
         }
+        function onPromptProgress(p) {
+            promptBar.visible = true
+            promptBar.value = p
+        }
+        function onGenSpeed(tps) {
+            liveStats.text = "Скорость: " + Number(tps).toFixed(1) + " ток/с"
+        }
+        function onContextFree(cells) {
+            freeLabel.text = "Свободно контекста: " + cells + " ток."
+        }
+        function onStatsAppended(line) {
+            chatModel.addMessage("stats", line)
+        }
+
     }
 }

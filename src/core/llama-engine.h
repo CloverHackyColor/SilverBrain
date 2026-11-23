@@ -53,6 +53,10 @@ public:
     void generationFinished(const QString &fullText);
     void generationError(const QString &message);
     void loadProgress(float progress);
+    void promptProgress(int percent);        // 0..100 — обработка промпта
+    void genSpeed(double tokensPerSec);      // ток/с в реальном времени
+    void contextFree(int cellsLeft);         // свободные ячейки KV-кэша
+    void statsAppended(const QString &line); // строка статистики хода
 
   private:
     bool ensureLoaded();
@@ -180,6 +184,11 @@ class LlamaEngine : public QObject {
     void presencePenaltyChanged();
     void frequencyPenaltyChanged();
     void historyRestored(const QVariantList &messages);
+    void promptProgress(int);
+    void genSpeed(double);  
+    void contextFree(int);
+    void statsAppended(QString);
+
 
     // Внутренние: уводят работу в поток
     void clearHistoryRequested();
