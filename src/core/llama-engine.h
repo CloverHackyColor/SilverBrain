@@ -42,7 +42,7 @@ public:
 
     bool saveHistory(const QString &path);
     bool loadHistory(const QString &path);
-    QVariantList historyToVariant() const;
+  
     void load(const QString &modelPath, const QString &mmprojPath, int nCtx);
     void generateAsync(const QString &prompt, const QString &imagePath, float temperature,
                        float repeatPenalty, float presencePenalty, float frequencyPenalty);
@@ -57,11 +57,16 @@ public:
     void genSpeed(double tokensPerSec);      // ток/с в реальном времени
     void contextFree(int cellsLeft);         // свободные ячейки KV-кэша
     void statsAppended(const QString &line); // строка статистики хода
+    void historySaved(bool ok);
+    void historyRestored(const QVariantList &messages);
+
+
 
   private:
     bool ensureLoaded();
     std::string buildPrompt() const;
  //   QString takeDecodableUtf8();   // отдаёт из буфера только целые UTF-8 символы
+    QVariantList historyToVariant() const;
 
     llama_model       *model   = nullptr;
     llama_context     *context = nullptr;
@@ -113,6 +118,12 @@ class LlamaEngine : public QObject {
     Q_INVOKABLE QString readFile(const QString &path);
     Q_INVOKABLE bool saveContext();
     Q_INVOKABLE bool loadContext();
+    Q_INVOKABLE void saveHistoryAs(const QUrl &url);
+    Q_INVOKABLE void loadHistoryFrom(const QUrl &url);
+    Q_INVOKABLE void saveHistoryTo(const QString &path);
+    Q_INVOKABLE void loadHistoryFrom(const QString &path);
+
+
 
     bool busy() const { return m_busy; }
     bool loading() const { return m_loading; }
@@ -188,7 +199,10 @@ class LlamaEngine : public QObject {
     void genSpeed(double);  
     void contextFree(int);
     void statsAppended(QString);
-
+    void saveHistoryRequested(const QString &path);
+    void loadHistoryRequested(const QString &path);
+    void historySaved(bool ok);   // re-emit подтверждения от worker'а
+  
 
     // Внутренние: уводят работу в поток
     void clearHistoryRequested();

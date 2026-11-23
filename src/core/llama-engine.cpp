@@ -91,6 +91,49 @@ namespace {
     return r == 0;
   }
 
+  constexpr char kMagic[4] = {'S', 'B', 'C', 'Z'}; // SilverBrain Compressed
+  constexpr uint8_t kFormatVersion = 1;
+
+// QByteArray lzmaCompress(const QByteArray &raw, QString *error) {
+//   size_t bound = lzma_stream_buffer_bound(static_cast<size_t>(raw.size()));
+//   QByteArray out;
+//   out.resize(static_cast<int>(bound));
+//   size_t outPos = 0;
+//   lzma_ret r = lzma_stream_buffer_encode(
+//       reinterpret_cast<const uint8_t *>(raw.constData()),
+//       static_cast<size_t>(raw.size()), LZMA_CHECK_CRC64,
+//       reinterpret_cast<uint8_t *>(out.data()), &outPos);
+//   if (r != LZMA_OK) {
+//     if (error) *error = QStringLiteral("lzma encode failed (%1)").arg(int(r));
+//     return {};
+//   }
+//   out.truncate(static_cast<int>(outPos));
+//   return out;
+// }
+
+// QByteArray lzmaDecompress(const uint8_t *data, size_t size, QString *error) {
+//   size_t outPos = 0, inPos = 0;
+//   // JSON истории всегда меньше исходника, но памяти просим с запасом ×4
+//   QByteArray out(static_cast<int>(size * 4) + 65536, 0);
+//   lzma_ret r = LZMA_OK;
+//   for (;;) {
+//     size_t cap = static_cast<size_t>(out.size());
+//     r = lzma_stream_buffer_decode(
+//         reinterpret_cast<uint8_t *>(out.data()), &outPos, nullptr,
+//         data, &inPos, size);
+//     if (r == LZMA_BUF_ERROR) { // буфер мал — растим и пробуем снова
+//       out.resize(out.size() * 2);
+//       continue;
+//     }
+//     break;
+//   }
+//   if (r != LZMA_OK) {
+//     if (error) *error = QStringLiteral("lzma decode failed (%1)").arg(int(r));
+//     return {};
+//   }
+//   out.truncate(static_cast<int>(outPos));
+//   return out;
+// }
 
 } // namespace
 
@@ -502,7 +545,7 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
       std::chrono::steady_clock::now() - genStart).count();
   const double tps = genSec > 0 ? nGen / genSec : 0.0;
   const int32_t freeFinal = static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
-
+  emit contextFree(freeFinal); // метка сверху сойдётся со статистикой
   char statLine[256];
   snprintf(statLine, sizeof(statLine),
            "Промпт: %d ток. за %.1f с · Ответ: %d ток. за %.1f с (%.1f ток/с) · Свободно контекста: %d",
@@ -524,21 +567,65 @@ bool LlamaWorker::saveHistory(const QString &path) {
   }
   QJsonObject root;
   root["messages"] = arr;
+  const QByteArray raw = QJsonDocument(root).toJson(QJsonDocument::Indented);
+
+  // Уровень 9 — максимум сжатия; история пишется редко, секунда на файл
+  // не страшна. Если захочется быстрее — поставьте 1.
+  const QByteArray packed = qCompress(raw, 9);
+
   QFile f(path);
-  if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+  if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    emit historySaved(false);
     return false;
-  f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+  }
+  f.write(kMagic, 4);
+  f.putChar(static_cast<char>(kFormatVersion));
+  f.write(packed);
+  f.close();
+
+  emit historySaved(true);
   return true;
 }
 
 bool LlamaWorker::loadHistory(const QString &path) {
   QFile f(path);
-  if (!f.open(QIODevice::ReadOnly))
+  if (!f.open(QIODevice::ReadOnly)) {
+    emit historySaved(false);
     return false;
-  const auto doc = QJsonDocument::fromJson(f.readAll());
+  }
+  const QByteArray blob = f.readAll();
+  f.close();
+
+  QByteArray raw;
+  if (blob.size() >= 5 && memcmp(blob.constData(), kMagic, 4) == 0) {
+    if (blob[4] != static_cast<char>(kFormatVersion)) {
+      emit historySaved(false);
+      emit generationError(QStringLiteral("History file made by a newer version"));
+      return false;
+    }
+    raw = qUncompress(blob.mid(5));
+    if (raw.isEmpty()) { // битый файл или не наш поток
+      emit historySaved(false);
+      emit generationError(QStringLiteral("History file is corrupted"));
+      return false;
+    }
+  } else {
+    raw = blob; // старый .sb.json или JSON без рамки — читаем как есть
+  }
+
+  QJsonParseError perr;
+  const QJsonDocument doc = QJsonDocument::fromJson(raw, &perr);
+  if (doc.isNull()) {
+    emit historySaved(false);
+    emit generationError(QStringLiteral("Not a chat history file: %1")
+                             .arg(perr.errorString()));
+    return false;
+  }
   const auto arr = doc.object()["messages"].toArray();
-  if (arr.isEmpty())
+  if (arr.isEmpty()) {
+    emit historySaved(false);
     return false;
+  }
 
   history.clear();
   history.reserve(static_cast<size_t>(arr.size()));
@@ -550,7 +637,21 @@ bool LlamaWorker::loadHistory(const QString &path) {
   if (history.empty() || history.front().first != "system")
     history.insert(history.begin(), kSystemMessage);
 
+  emit historyRestored(historyToVariant());
+  emit historySaved(true);
   return true;
+}
+
+QVariantList LlamaWorker::historyToVariant() const {
+  QVariantList out;
+  out.reserve(static_cast<int>(history.size()));
+  for (const auto &[role, text] : history) {
+    QVariantMap m;
+    m["role"] = QString::fromStdString(role);
+    m["text"] = QString::fromStdString(text);
+    out.append(m);
+  }
+  return out;
 }
 
 // ============================ LlamaEngine ==================================
@@ -559,10 +660,11 @@ LlamaEngine::LlamaEngine(QObject *parent) : QObject(parent) {
     m_worker = new LlamaWorker(); // без parent: владелец — поток
     m_worker->moveToThread(&m_thread);
 
-    connect(this, &LlamaEngine::loadRequested,     m_worker, &LlamaWorker::load,     Qt::QueuedConnection);
-    connect(this, &LlamaEngine::generateRequested, m_worker, &LlamaWorker::generateAsync, Qt::QueuedConnection);
+    connect(this, &LlamaEngine::loadRequested,         m_worker, &LlamaWorker::load,     Qt::QueuedConnection);
+    connect(this, &LlamaEngine::generateRequested,     m_worker, &LlamaWorker::generateAsync, Qt::QueuedConnection);
     connect(this, &LlamaEngine::clearHistoryRequested, m_worker, &LlamaWorker::clearHistory, Qt::QueuedConnection);
-
+    connect(this, &LlamaEngine::saveHistoryRequested,  m_worker, &LlamaWorker::saveHistory);     // queued — уйдёт в поток
+    connect(this, &LlamaEngine::loadHistoryRequested,  m_worker, &LlamaWorker::loadHistory);
     connect(m_worker, &LlamaWorker::loadProgress,      this, &LlamaEngine::setLoadProgress);
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::modelLoaded);
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::onWorkFinished);
@@ -575,7 +677,10 @@ LlamaEngine::LlamaEngine(QObject *parent) : QObject(parent) {
     connect(m_worker, &LlamaWorker::genSpeed,          this, &LlamaEngine::genSpeed);
     connect(m_worker, &LlamaWorker::contextFree,       this, &LlamaEngine::contextFree);
     connect(m_worker, &LlamaWorker::statsAppended,     this, &LlamaEngine::statsAppended);
- 
+    connect(m_worker, &LlamaWorker::historySaved,      this, &LlamaEngine::historySaved);
+    connect(m_worker, &LlamaWorker::historyRestored,   this, &LlamaEngine::historyRestored);
+
+
     connect(m_worker, &LlamaWorker::modelLoaded, this,
             [this](bool, const QString &) {
               if (m_loading) {
@@ -686,14 +791,27 @@ bool LlamaEngine::loadContext() {
   return true;
 }
 
-QVariantList LlamaWorker::historyToVariant() const {
-  QVariantList out;
-  out.reserve(static_cast<int>(history.size()));
-  for (const auto &m : history) {
-    QVariantMap o;
-    o["role"] = QString::fromStdString(m.first);
-    o["text"] = QString::fromStdString(m.second);
-    out.append(o);
-  }
-  return out;
+void LlamaEngine::saveHistoryAs(const QUrl &url) {
+  if (m_busy) // не сохраняем посреди генерации — история меняется на ходу
+    return;
+  const QString path = url.toLocalFile();
+  if (!path.isEmpty())
+    emit saveHistoryRequested(path);
 }
+
+void LlamaEngine::loadHistoryFrom(const QUrl &url) {
+  if (m_busy)
+    return;
+  const QString path = url.toLocalFile();
+  if (!path.isEmpty())
+    emit loadHistoryRequested(path);
+}
+
+void LlamaEngine::saveHistoryTo(const QString &path) {
+  emit saveHistoryRequested(path);
+}
+
+void LlamaEngine::loadHistoryFrom(const QString &path) {
+  emit loadHistoryRequested(path);
+}
+

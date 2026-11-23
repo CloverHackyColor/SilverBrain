@@ -68,20 +68,48 @@ ApplicationWindow {
                 }
             }
 
+            FileDialog {
+                id: saveDialog
+                fileMode: FileDialog.SaveFile
+                title: "Save history"
+                nameFilters: ["SilverBrain chat (*.sbc)"]
+                defaultSuffix: "sbc"
+                currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
+                onAccepted: {
+                    var path = selectedFile.toString()
+                    if (path.startsWith("file://"))
+                        path = decodeURIComponent(path.substring(7))
+                    llamaEngine.saveHistoryTo(path)
+                }
+            }
+            FileDialog {
+                id: loadDialog
+                fileMode: FileDialog.OpenFile
+                title: "Load history"
+                nameFilters: ["SilverBrain chat (*.sbc)"]
+                currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
+                onAccepted: {
+                    var path = selectedFile.toString()
+                    if (path.startsWith("file://"))
+                        path = decodeURIComponent(path.substring(7))
+                    llamaEngine.loadHistoryFrom(path)
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Button {
                     text: "Save ctx"
-                    onClicked: llamaEngine.saveContext()
+                    onClicked: saveDialog.open()
                 }
                 Button {
                     text: "Load ctx"
                     enabled: !llamaEngine.busy && !llamaEngine.loading
-                    onClicked: llamaEngine.loadContext()
+                    onClicked: loadDialog.open()
                 }
             }
 
-            Label { text: "Температура: " + llamaEngine.temperature.toFixed(2); color: "#26251f" }
+            Label { text: "Temperature: " + llamaEngine.temperature.toFixed(2); color: "#26251f" }
             Slider {
                 Layout.fillWidth: true
                 from: 0; to: 2; stepSize: 0.05
@@ -398,6 +426,10 @@ ApplicationWindow {
         }
         function onStatsAppended(line) {
             chatModel.addMessage("stats", line)
+        }
+
+        function onHistorySaved(ok) {
+            statusLabel.text = ok ? qsTr("История сохранена") : qsTr("Ошибка сохранения");
         }
 
     }
