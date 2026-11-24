@@ -1,8 +1,5 @@
 #include "llama-engine.h"
 
-#include <utility>
-#include <chrono>
-#include <cstdio>
 
 namespace {
 
@@ -148,6 +145,78 @@ namespace {
 
 } // namespace
 
+
+#include <QDir>
+#include <QFileInfo>
+#include <QSettings>
+#include <optional>
+
+extern "C" {
+#include "gguf.h"
+#include "ggml.h"
+}
+
+namespace MmprojAutoDetect {
+
+    // Быстрое чтение uint32 из метаданных GGUF без аллокации весов
+    static std::optional<uint32_t> getGgufUInt32(const QString& path, const QString& key) {
+        struct gguf_init_params params = { /*.no_alloc = */ true, /*.ctx = */ nullptr };
+        gguf_context* ctx = gguf_init_from_file(path.toStdString().c_str(), params);
+        if (!ctx) return std::nullopt;
+
+        int key_idx = gguf_find_key(ctx, key.toStdString().c_str());
+        if (key_idx != -1 && gguf_get_kv_type(ctx, key_idx) == GGUF_TYPE_UINT32) {
+            uint32_t val = gguf_get_val_u32(ctx, key_idx);
+            gguf_free(ctx);
+            return val;
+        }
+        gguf_free(ctx);
+        return std::nullopt;
+    }
+
+    // "Очищает" имя файла, удаляя "mmproj" и оставляя только буквы/цифры для сравнения
+    static QString coreName(const QString& s) {
+        QString lower = s.toLower();
+        lower.replace(QStringLiteral("mmproj"), QStringLiteral(""));
+        QString cleaned;
+        for (const QChar& c : lower) {
+            if (c.isLetterOrNumber()) cleaned.append(c);
+        }
+        return cleaned;
+    }
+
+    // Главная функция поиска
+    static QString findDefault(const QString& modelPath) {
+        // 1. Проверяем ручной override в QSettings (если пользователь когда-то выбирал вручную)
+        QSettings settings;
+        settings.beginGroup(QStringLiteral("mmprojOverride"));
+        QString override = settings.value(modelPath).toString();
+        settings.endGroup();
+        if (!override.isEmpty()) return override;
+
+        // 2. Ищем файл с похожим именем в той же папке
+        QFileInfo fi(modelPath);
+        QString modelName = coreName(fi.completeBaseName());
+        if (!modelName.isEmpty()) {
+            QDir dir = fi.dir();
+            QFileInfoList files = dir.entryInfoList({QStringLiteral("*.gguf")}, QDir::Files);
+            for (const QFileInfo& file : files) {
+                if (file.fileName().toLower().contains(QStringLiteral("mmproj"))) {
+                    if (coreName(file.completeBaseName()) == modelName) {
+                        // Проверяем совместимость размеров (embedding_length == projection_dim)
+                        auto embd = getGgufUInt32(modelPath, QStringLiteral("embedding_length"));
+                        auto proj = getGgufUInt32(file.absoluteFilePath(), QStringLiteral("projection_dim"));
+                        if (embd && proj && *embd == *proj) {
+                            return file.absoluteFilePath();
+                        }
+                    }
+                }
+            }
+        }
+        return QString(); // Не найдено
+    }
+}
+
 // ============================ LlamaWorker ==================================
 
 LlamaWorker::~LlamaWorker() {
@@ -164,12 +233,18 @@ bool LlamaWorker::ensureLoaded() {
     return false;
 }
 
-void LlamaWorker::load(const QString &modelPath, const QString &mmprojPath, int nCtx) {
+void LlamaWorker::load(const QString &modelPath, QString mmprojPath, int nCtx) {
 
-  if (model) { // защита от повторной загрузки
+  if (model && currentModelPath == modelPath) { // защита от повторной загрузки
     emit modelLoaded(true, {});
     return;
   }
+
+  // ГАРАНТИРОВАННАЯ ОЧИСТКА ПЕРЕД ЗАГРУЗКОЙ НОВОГО
+  if (model) {
+      unload(); 
+  }
+
   stopRequested.store(false);
 
   llama_backend_init(); // один раз на процесс — вызов тут, где он единственный
@@ -211,6 +286,23 @@ void LlamaWorker::load(const QString &modelPath, const QString &mmprojPath, int 
     emit modelLoaded(false, QStringLiteral("Failed to create context"));
     return;
   }
+
+  // =========================================================
+  // НОВАЯ ЛОГИКА: АВТОМАТИЧЕСКИЙ ПОИСК MMPOJ, ЕСЛИ ПУСТО
+  // =========================================================
+  if (mmprojPath.isEmpty()) {
+      mmprojPath = MmprojAutoDetect::findDefault(modelPath);
+      if (!mmprojPath.isEmpty()) {
+          qDebug() << "[SilverBrain] Autodetect: found and attached mmproj:" << mmprojPath;
+      } else {
+          qDebug() << "[SilverBrain] Autodetect: appropriate mmproj not found. Loading in text mode.";
+      }
+  }
+  // =========================================================
+
+    // Сохраняем текущие пути в переменные класса (если они у вас есть)
+  currentModelPath = modelPath;
+  currentMmprojPath = mmprojPath; 
 
   if (!mmprojPath.isEmpty()) {
     mtmd_context_params mparams = mtmd_context_params_default();
@@ -682,6 +774,34 @@ QVariantList LlamaWorker::historyToVariant() const {
   return out;
 }
 
+void LlamaWorker::unload() {
+    // 1. Останавливаем любые текущие вычисления
+    stopRequested.store(true);
+
+    // 2. ОСВОБОЖДАЕМ КОНТЕКСТ ПРОЕКТОРА (Критически важно!)
+    if (mctx) {
+        mtmd_free(mctx);
+        mctx = nullptr;
+    }
+
+    // 3. Освобождаем контекст и модель llama.cpp
+    if (context) {
+        llama_free(context);
+        context = nullptr;
+    }
+    if (model) {
+        llama_model_free(model);
+        model = nullptr;
+        vocab = nullptr;
+    }
+
+    // 4. Сбрасываем внутренние переменные состояния
+    currentModelPath = "";
+    currentMmprojPath = ""; // <-- СБРОС ПУТИ ПРОЕКТОРА
+    
+    emit modelUnloaded(); // Сигнал в QML, что можно обновить UI (например, скрыть кнопку "Загрузить изображение")
+}
+
 // ============================ LlamaEngine ==================================
 
 LlamaEngine::LlamaEngine(QObject *parent) : QObject(parent) {
@@ -761,12 +881,13 @@ void LlamaEngine::setLoadProgress(float p) {
   emit loadProgressChanged();
 }
 
-void LlamaEngine::loadModel(const QString &modelPath) {
+void LlamaEngine::loadModel(const QString &modelPath, const QString &mmprojPath) {
   if (m_busy || modelPath.isEmpty())
     return;
   m_busy = true;
   m_loading = true; // начинаем отслеживать именно загрузку
   m_loadProgress = 0.0;
+  m_mmprojPath = mmprojPath;
   emit busyChanged();
   emit loadingChanged();
   emit loadProgressChanged();
@@ -778,9 +899,9 @@ void LlamaEngine::stopGeneration() { m_worker->stopRequested.store(true); }
 QString LlamaEngine::readFile(const QString &path) {
   QFile f(path);
   if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-    return QStringLiteral("[Не удалось открыть файл: %1]").arg(path);
+    return QStringLiteral("[The file is not opened: %1]").arg(path);
   if (f.size() > 512 * 1024)
-    return QStringLiteral("[Файл слишком большой: %1 КБ]").arg(f.size() / 1024);
+    return QStringLiteral("[The file is too large: %1 КБ]").arg(f.size() / 1024);
   const QString name = QFileInfo(path).fileName();
   return QStringLiteral("📎 **") + name + QStringLiteral("**\n```\n") +
          QString::fromUtf8(f.readAll()) + QStringLiteral("\n```");

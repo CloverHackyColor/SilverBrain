@@ -24,7 +24,7 @@ ApplicationWindow {
             spacing: 10
 
 
-            Label { text: "Настройки"; font.bold: true; color: "#26251f" }
+            Label { text: "Settings"; font.bold: true; color: "#26251f" }
 
             Button {
                 id: stopButton
@@ -44,7 +44,7 @@ ApplicationWindow {
                 }
             }
 
-            Label { text: "Размер контекста"; color: "#26251f" }
+            Label { text: "Context size"; color: "#26251f" }
             SpinBox {
                 id: ctxSpin
                 Layout.fillWidth: true
@@ -166,12 +166,12 @@ ApplicationWindow {
                             color: "#ffffff"
                             border.color: "#d9d6cf"
                         }
-                        placeholderText: "Название GGUF-модели..."
+                        placeholderText: "Name of GGUF-model..."
                     }
                     FileDialog {
                         id: modelFileDialog
-                        title: "Выберите файл модели"
-                        nameFilters: ["GGUF модели (*.gguf)"]
+                        title: "Choose model file"
+                        nameFilters: ["GGUF model (*.gguf)"]
                         //selectedNameFilterExtensions: ["*.gguf"]
                         onAccepted: {
                             // currentFile — локальный URL выбранного файла
@@ -179,8 +179,26 @@ ApplicationWindow {
                             if (path.startsWith("file://"))
                             path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
                             modelPathField.text = path 
-                            llamaEngine.loadModel(path)
+                            let emptyMmprojPath = ""
+                            console.log("Model loading: ", selectedModelPath)
+                            llamaEngine.loadModel(path, emptyMmprojPath)
                         }
+                        
+           /*                 onAccepted: {
+                                let selectedModelPath = fileUrl.toLocalFile()
+                                
+                                // Мы намеренно передаем "" в качестве mmprojPath.
+                                // C++ код (MmprojAutoDetect::findDefault) сам найдет нужный файл в папке,
+                                // либо проверит QSettings на наличие ручного переопределения для этой модели.
+                                let emptyMmprojPath = ""
+                                let contextSize = 4096 // или из ваших настроек
+                                
+                                console.log("Загрузка модели:", selectedModelPath)
+                                
+                                // Вызываем наш обновленный метод
+                                llamaWorker.load(selectedModelPath, emptyMmprojPath, contextSize)
+                            }
+             */               
                     }
                     Button {
                         text: "Load model"
@@ -188,10 +206,10 @@ ApplicationWindow {
                         enabled: !llamaEngine.busy
                         onClicked: modelFileDialog.open()
                     }
-                    FileDialog {
+        /*            FileDialog {
                         id: mmprojDialog
-                        title: "Выберите mmproj"
-                        nameFilters: ["GGUF проектор (*.gguf)"]
+                        title: "Choose mmproj"
+                        nameFilters: ["GGUF projector (*.gguf)"]
                         onAccepted: {
                             var path = selectedFile.toString()
                             if (path.startsWith("file://"))
@@ -199,12 +217,13 @@ ApplicationWindow {
                             llamaEngine.mmprojPath = path
                         }
                     }
-                    Button { text: "mmproj"; onClicked: mmprojDialog.open() }
+                    */
+                    //Button { text: "mmproj"; onClicked: mmprojDialog.open() }
 
                     Label { 
                         id: statusLabel; 
-                        color: statusLabel.text.startsWith("Ошибка")   ? "#c62828"
-                                : statusLabel.text.startsWith("Загрузка") ? "#2f6feb"
+                        color: statusLabel.text.startsWith("Error")   ? "#c62828"
+                                : statusLabel.text.startsWith("Loading...") ? "#2f6feb"
                                 : "#2e7d32"
                     }
                 }
@@ -329,7 +348,7 @@ ApplicationWindow {
                     FileDialog {
                         id: attachDialog
                         title: "Attach image"
-                        nameFilters: ["Изображения (*.png *.jpg *.jpeg *.webp)"]
+                        nameFilters: ["Images (*.png *.jpg *.jpeg *.webp)"]
                         onAccepted: {
                             var path = selectedFile.toString()
                             if (path.startsWith("file://"))
@@ -391,12 +410,12 @@ ApplicationWindow {
         target: llamaEngine
         function onLoadProgressChanged() {
             if (llamaEngine.loading)
-                statusLabel.text = "Загрузка модели: " +
+                statusLabel.text = "Model loading...: " +
                     Math.round(llamaEngine.loadProgress * 100) + "%"
         }
 
         function onModelLoaded(ok, error) {
-            statusLabel.text = ok ? "Модель загружена" : ("Ошибка: " + error)
+            statusLabel.text = ok ? "Model loaded" : ("Ошибка: " + error)
         }
         function onTokenReceived(piece) {
             // Дописываем в последнее сообщение (пустое, созданное в sendMessage)
@@ -407,7 +426,7 @@ ApplicationWindow {
             liveStats.text = ""
         }
         function onGenerationError(message) {
-            chatModel.appendToLast("[Ошибка] " + message)
+            chatModel.appendToLast("[Error] " + message)
         }
         function onHistoryRestored(msgs) {
             chatModel.clear()
@@ -419,17 +438,17 @@ ApplicationWindow {
             promptBar.value = p
         }
         function onGenSpeed(tps) {
-            liveStats.text = "Скорость: " + Number(tps).toFixed(1) + " ток/с"
+            liveStats.text = "Speed: " + Number(tps).toFixed(1) + " ток/с"
         }
         function onContextFree(cells) {
-            freeLabel.text = "Свободно контекста: " + cells + " ток."
+            freeLabel.text = "Free context: " + cells + " ток."
         }
         function onStatsAppended(line) {
             chatModel.addMessage("stats", line)
         }
 
         function onHistorySaved(ok) {
-            statusLabel.text = ok ? qsTr("История сохранена") : qsTr("Ошибка сохранения");
+            statusLabel.text = ok ? qsTr("History is saved") : qsTr("Saving error");
         }
 
     }

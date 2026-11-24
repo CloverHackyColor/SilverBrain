@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QObject>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QString>
 #include <QThread>
@@ -14,10 +15,14 @@
 #include <QImage>
 
 #include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
 
 #include "llama.h"  // достаточно одного include: таргет llama сам экспортирует
                     // нужные include-директории через target_include_directories
@@ -43,7 +48,7 @@ public:
     bool saveHistory(const QString &path);
     bool loadHistory(const QString &path);
   
-    void load(const QString &modelPath, const QString &mmprojPath, int nCtx);
+    void load(const QString &modelPath, QString mmprojPath, int nCtx);
     void generateAsync(const QString &prompt, const QString &imagePath, float temperature,
                        float repeatPenalty, float presencePenalty, float frequencyPenalty);
 
@@ -111,7 +116,7 @@ class LlamaEngine : public QObject {
     explicit LlamaEngine(QObject *parent = nullptr);
     ~LlamaEngine() override;
 
-    Q_INVOKABLE void loadModel(const QString &modelPath);
+    Q_INVOKABLE void loadModel(const QString &modelPath, const QString &mmprojPath);
     Q_INVOKABLE void generateAsync(const QString &prompt);
     Q_INVOKABLE void clearHistory();
     Q_INVOKABLE void stopGeneration();
