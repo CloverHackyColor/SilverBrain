@@ -10,15 +10,38 @@ SilverBrainEngine::SilverBrainEngine(LlamaEngine* llm, EmbeddingEngine* emb, QOb
     : QObject(parent), m_llm(llm), m_emb(emb) 
 {
     // Проксирование сигналов LlamaEngine
-    connect(m_llm, &LlamaEngine::modelLoaded, this, &SilverBrainEngine::modelLoaded);
-    connect(m_llm, &LlamaEngine::tokenReceived, this, &SilverBrainEngine::tokenReceived);
-    connect(m_llm, &LlamaEngine::generationFinished, this, &SilverBrainEngine::generationFinished);
-    connect(m_llm, &LlamaEngine::generationError, this, &SilverBrainEngine::generationError);
-    connect(m_llm, &LlamaEngine::busyChanged, this, &SilverBrainEngine::busyChanged);
-    connect(m_llm, &LlamaEngine::loadingChanged, this, &SilverBrainEngine::loadingChanged);
-    connect(m_llm, &LlamaEngine::loadProgressChanged, this, &SilverBrainEngine::loadProgressChanged);
-    connect(m_llm, &LlamaEngine::historyRestored, this, &SilverBrainEngine::historyRestored);
-    
+    connect(m_llm, &LlamaEngine::modelLoaded, this,
+            &SilverBrainEngine::modelLoaded);
+    connect(m_llm, &LlamaEngine::tokenReceived, this,
+            &SilverBrainEngine::tokenReceived);
+    connect(m_llm, &LlamaEngine::generationFinished, this,
+            &SilverBrainEngine::generationFinished);
+    connect(m_llm, &LlamaEngine::generationError, this,
+            &SilverBrainEngine::generationError);
+    connect(m_llm, &LlamaEngine::busyChanged, this,
+            &SilverBrainEngine::busyChanged);
+    connect(m_llm, &LlamaEngine::loadingChanged, this,
+            &SilverBrainEngine::loadingChanged);
+    connect(m_llm, &LlamaEngine::loadProgressChanged, this,
+            &SilverBrainEngine::loadProgressChanged);
+    connect(m_llm, &LlamaEngine::contextSizeChanged, this,
+            &SilverBrainEngine::contextSizeChanged);
+    connect(m_llm, &LlamaEngine::temperatureChanged, this,
+            &SilverBrainEngine::temperatureChanged);
+    connect(m_llm, &LlamaEngine::repeatPenaltyChanged, this,
+            &SilverBrainEngine::repeatPenaltyChanged);
+    connect(m_llm, &LlamaEngine::presencePenaltyChanged, this,
+            &SilverBrainEngine::presencePenaltyChanged);
+    connect(m_llm, &LlamaEngine::frequencyPenaltyChanged, this,
+            &SilverBrainEngine::frequencyPenaltyChanged);
+    connect(m_llm, &LlamaEngine::imagePathChanged, this,
+            &SilverBrainEngine::imagePathChanged);
+    connect(m_llm, &LlamaEngine::historyRestored, this,
+            &SilverBrainEngine::historyRestored);
+
+    connect(m_llm, &LlamaEngine::promptProgress, this,
+            &SilverBrainEngine::promptProgress);
+
     // Indexer
     m_indexer = new CodeIndexer(m_emb, this);
     connect(m_indexer, &CodeIndexer::progress, this, &SilverBrainEngine::onIndexerProgress);

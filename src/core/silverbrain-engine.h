@@ -11,6 +11,23 @@
 
 class SilverBrainEngine : public QObject {
     Q_OBJECT
+    // --- Проксирование свойств LlamaEngine ---
+    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
+    Q_PROPERTY(bool loading READ loading NOTIFY loadingChanged)
+    Q_PROPERTY(qreal loadProgress READ loadProgress NOTIFY loadProgressChanged)
+    Q_PROPERTY(int contextSize READ contextSize WRITE setContextSize NOTIFY
+                   contextSizeChanged)
+    Q_PROPERTY(qreal temperature READ temperature WRITE setTemperature NOTIFY
+                   temperatureChanged)
+    Q_PROPERTY(qreal repeatPenalty READ repeatPenalty WRITE setRepeatPenalty
+                   NOTIFY repeatPenaltyChanged)
+    Q_PROPERTY(qreal presencePenalty READ presencePenalty WRITE
+                   setPresencePenalty NOTIFY presencePenaltyChanged)
+    Q_PROPERTY(qreal frequencyPenalty READ frequencyPenalty WRITE
+                   setFrequencyPenalty NOTIFY frequencyPenaltyChanged)
+    Q_PROPERTY(QString imagePath READ imagePath WRITE setImagePath NOTIFY
+                   imagePathChanged)
+
     Q_PROPERTY(QString projectPath READ projectPath WRITE setProjectPath NOTIFY projectPathChanged)
     Q_PROPERTY(bool indexReady READ indexReady NOTIFY indexReadyChanged)
     Q_PROPERTY(bool isIndexing READ isIndexing NOTIFY isIndexingChanged)
@@ -44,8 +61,26 @@ public:
     bool busy() const { return m_llm->busy(); }
     bool loading() const { return m_llm->loading(); }
     qreal loadProgress() const { return m_llm->loadProgress(); }
-    
-signals:
+    int contextSize() const { return m_llm->contextSize(); }
+    qreal temperature() const { return m_llm->temperature(); }
+    qreal repeatPenalty() const { return m_llm->repeatPenalty(); }
+    qreal presencePenalty() const { return m_llm->presencePenalty(); }
+    qreal frequencyPenalty() const { return m_llm->frequencyPenalty(); }
+    QString imagePath() const { return m_llm->imagePath(); }
+
+    void setContextSize(int v) { m_llm->setContextSize(v); }
+    void setTemperature(qreal v) { m_llm->setTemperature(v); }
+    void setRepeatPenalty(qreal v) { m_llm->setRepeatPenalty(v); }
+    void setPresencePenalty(qreal v) { m_llm->setPresencePenalty(v); }
+    void setFrequencyPenalty(qreal v) { m_llm->setFrequencyPenalty(v); }
+    void setImagePath(const QString &v) { m_llm->setImagePath(v); }
+
+    bool indexReady() const { return m_index.isBuilt(); }
+    bool isIndexing() const { return m_isIndexing; }
+    float indexProgress() const { return m_indexProgress; }
+    QString indexingStatus() const { return m_indexingStatus; }
+
+  signals:
     // Проксирование сигналов LlamaEngine
     void modelLoaded(bool ok, const QString& error);
     void tokenReceived(const QString& piece);
@@ -54,8 +89,15 @@ signals:
     void busyChanged();
     void loadingChanged();
     void loadProgressChanged();
+    void contextSizeChanged();
+    void temperatureChanged();
+    void repeatPenaltyChanged();
+    void presencePenaltyChanged();
+    void frequencyPenaltyChanged();
+    void imagePathChanged();
     void historyRestored(const QVariantList& messages);
-    
+    void promptProgress(int percent);
+
     // Свои сигналы
     void projectPathChanged();
     void indexReadyChanged();

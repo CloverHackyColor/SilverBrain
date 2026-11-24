@@ -590,7 +590,8 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
       }
       nextPos += chunk;
       pos += chunk;
-      emit promptProgress(static_cast<int>(pos * 100 / nTok));
+      int percent = static_cast<int>((static_cast<double>(pos) / nTok) * 100.0);
+      emit promptProgress(percent);
     }
     emit promptProgress(100);
     nPromptTokens = nTok;

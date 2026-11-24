@@ -353,7 +353,11 @@ ApplicationWindow {
                         onClicked: attachDialog.open()
                     }
                     Label {
-                        text: silverBrain.imagePath !== "" ? "🖼 " + silverBrain.imagePath.split("/").pop() : ""
+                        text: {
+                            if (!silverBrain.imagePath || silverBrain.imagePath === "") return ""
+                            var parts = silverBrain.imagePath.split("/")
+                            return "🖼 " + parts[parts.length - 1]
+                        }
                         visible: text !== ""
                         color: "#2f6feb"
                         MouseArea { anchors.fill: parent; onClicked: silverBrain.imagePath = "" }
@@ -414,10 +418,13 @@ ApplicationWindow {
         }
         function onGenerationFinished(fullText) {
             promptBar.visible = false
+            promptBar.value = 0
             liveStats.text = ""
         }
         function onGenerationError(message) {
             chatModel.appendToLast("[Error] " + message)
+            promptBar.visible = false
+            promptBar.value = 0
         }
         function onHistoryRestored(msgs) {
             chatModel.clear()
