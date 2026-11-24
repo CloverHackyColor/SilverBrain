@@ -38,6 +38,12 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-const-variable -Wno-unused-f
 
 
 add_subdirectory(third_party/llama.cpp)
+# tree-sitter
+add_subdirectory(third_party/tree-sitter)
+
+# tree-sitter-cpp
+add_subdirectory(third_party/tree-sitter-cpp)
+
 get_target_property(GGML_METAL_BINARY_DIR ggml-metal BINARY_DIR)
 get_target_property(GGML_METAL_SOURCE_DIR ggml-metal SOURCE_DIR)
 
@@ -61,6 +67,17 @@ add_executable(SilverBrain
     src/core/llama-engine.h
     src/core/chat-model.cpp
     src/core/chat-model.h
+    src/core/embedding-engine.h
+    src/core/embedding-engine.cpp
+    src/core/code-chunk.h
+    src/core/code-indexer.h
+    src/core/code-indexer.cpp
+    src/core/code-index.h
+    src/core/code-index.cpp
+    src/core/code-retriever.h
+    src/core/code-retriever.cpp
+    src/core/silverbrain-engine.h
+    src/core/silverbrain-engine.cpp
     ${QML_RESOURCES}
 )
 
