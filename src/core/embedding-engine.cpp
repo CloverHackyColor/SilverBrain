@@ -3,6 +3,13 @@
 #include <cmath>
 #include <stdexcept>
 
+namespace {
+  int32_t usedTokens(llama_context *ctx) {
+    llama_pos pmax = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+    return pmax < 0 ? 0 : static_cast<int32_t>(pmax) + 1;
+  }
+}
+
 // ============================ EmbeddingWorker ==============================
 EmbeddingWorker::~EmbeddingWorker() {
     if (m_ctx) llama_free(m_ctx);
@@ -99,16 +106,18 @@ std::vector<float> EmbeddingWorker::encode(const QString& text) {
     //     throw std::runtime_error("llama_decode failed in embedding");
     // }
 
+    llama_pos nextPos = usedTokens(m_ctx);
     const int32_t nBatch = static_cast<int32_t>(llama_n_batch(m_ctx));
     const int32_t nTok = static_cast<int32_t>(tokens.size());
     for (int32_t pos = 0; pos < nTok; ) {
       const int32_t chunk = std::min(nBatch, nTok - pos);
       if (!decodeTokens(m_ctx, tokens.data() + pos, chunk, nextPos)) {
-        emit generationError(QStringLiteral("embedding_process failed"));
-        return;
+        throw std::runtime_error("embedding_process failed");
+        break;
       }
+      nextPos += chunk;
       pos += chunk;
-      emit promptProgress(static_cast<int>(pos * 100 / nTok));
+//      emit promptProgress(static_cast<int>(pos * 100 / nTok));
     }
     
     // Извлечение embedding
@@ -192,9 +201,11 @@ std::vector<float> EmbeddingEngine::encode(const QString& text) {
 
 int EmbeddingEngine::dimensions() const {
     int dims = 0;
-    QMetaObject::invokeMethod(m_worker, []() { return m_dims; }, 
-                              Qt::BlockingQueuedConnection,
-                              Q_RETURN_ARG(int, dims));
+    // Используем BlockingQueuedConnection, чтобы дождаться выполнения в потоке воркера
+    QMetaObject::invokeMethod(m_worker, [this, &dims]() {
+        dims = m_worker->dimensions();
+    }, Qt::BlockingQueuedConnection);
+    
     return dims;
 }
 

@@ -15,6 +15,7 @@ public:
 public slots:
     void load(const QString& modelPath);
     std::vector<float> encode(const QString& text);
+    int dimensions() const { return m_dims; } 
     
 signals:
     void modelLoaded(bool ok, const QString& error);
@@ -44,6 +45,7 @@ public:
 signals:
     void modelLoaded(bool ok, const QString& error);
     void loadedChanged();
+    void loadModelRequested(const QString& modelPath);
     
 private slots:
     void onModelLoaded(bool ok, const QString& error);

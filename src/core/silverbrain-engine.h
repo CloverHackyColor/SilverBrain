@@ -21,7 +21,7 @@ public:
     explicit SilverBrainEngine(LlamaEngine* llm, EmbeddingEngine* emb, QObject* parent = nullptr);
     
     // Проксирование методов LlamaEngine
-    Q_INVOKABLE void loadModel(const QString& modelPath) { m_llm->loadModel(modelPath); }
+    Q_INVOKABLE void loadModel(const QString& modelPath);
     Q_INVOKABLE void generateAsync(const QString& prompt);
     Q_INVOKABLE void clearHistory() { m_llm->clearHistory(); }
     Q_INVOKABLE void stopGeneration() { m_llm->stopGeneration(); }
@@ -84,4 +84,5 @@ private:
     
     QString indexPath() const;
     QString buildEnrichedPrompt(const QString& userQuery, const QStringList& chunks);
+    
 };

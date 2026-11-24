@@ -3,6 +3,8 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QDebug>
 
 SilverBrainEngine::SilverBrainEngine(LlamaEngine* llm, EmbeddingEngine* emb, QObject* parent)
     : QObject(parent), m_llm(llm), m_emb(emb) 
@@ -139,4 +141,37 @@ void SilverBrainEngine::onIndexerFinished(bool success, const QString& error) {
         emit generationError("Failed to build index: " + error);
     }
     emit indexingStatusChanged();
+}
+
+void SilverBrainEngine::loadModel(const QString& modelPath) {
+    // 1. Загружаем основную LLM (проксируем вызов)
+    m_llm->loadModel(modelPath);
+    
+    // 2. Автоматически ищем и загружаем embedding-модель в той же папке
+    QFileInfo fi(modelPath);
+    QDir dir = fi.absoluteDir();
+    
+    // Ищем файлы, содержащие "nomic" или "embed" и заканчивающиеся на .gguf
+    // Это гибче, чем жестко заданное имя файла
+    QStringList filters;
+    filters << "*nomic*.gguf" << "*embed*.gguf";
+    
+    dir.setNameFilters(filters);
+    dir.setFilter(QDir::Files);
+    QStringList embedFiles = dir.entryList();
+    
+    if (!embedFiles.isEmpty()) {
+        // Берем первый найденный подходящий файл
+        QString embedPath = dir.absoluteFilePath(embedFiles.first());
+        qDebug() << "[SilverBrain] Auto-discovered embedding model:" << embedPath;
+        
+        // Загружаем её асинхронно
+        m_emb->loadModel(embedPath);
+    } else {
+        qDebug() << "[SilverBrain] Embedding model not found in" << dir.absolutePath();
+        qDebug() << "[SilverBrain] Tip: Place nomic-embed-text-v1.5-Q8_0.gguf next to your LLM model for semantic search.";
+        
+        // Опционально: можно отправить сигнал в QML, чтобы показать ненавязчивое 
+        // информационное сообщение (например, желтый значок рядом с названием модели)
+    }
 }

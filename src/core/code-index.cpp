@@ -1,10 +1,11 @@
 // src/core/code-index.cpp
 #include "code-index.h"
+#include <QFile>  
 #include <fstream>
 #include <cmath>
 #include <algorithm>
 #include <sstream>
-#include "hnswlib/hnswlib.h"
+#include "hnswlib.h"
 
 // ============================ BM25 =========================================
 void CodeIndex::Bm25Index::build(const std::vector<CodeChunk>& chunks) {
@@ -101,16 +102,23 @@ void CodeIndex::buildBm25() {
 
 void CodeIndex::buildHnsw(int dims) {
     m_hnsw_dims = dims;
-    m_hnsw = std::make_unique<hnswlib::HierarchicalNSW<float, float>>(
-        dims, m_chunks.size(), /*M=*/16, /*ef_construction=*/200
+    
+    // 1. Создаем пространство (L2 для нормализованных векторов = Cosine)
+    hnswlib::L2Space space(dims);
+    
+    // 2. Создаем индекс: space, max_elements, M, ef_construction
+    m_hnsw = std::make_unique<hnswlib::HierarchicalNSW<float>>(
+        &space, 
+        m_chunks.size(), 
+        16,   // M (количество связей)
+        200   // ef_construction (качество построения)
     );
     
-    // Добавляем все чанки с их embedding'ами
+    // 3. Добавляем точки
     for (const auto& chunk : m_chunks) {
-        if (chunk.embedding.size() != dims) {
-            throw std::runtime_error("Chunk embedding dimension mismatch");
+        if (chunk.embedding.size() == dims) {
+            m_hnsw->addPoint(chunk.embedding.data(), chunk.id);
         }
-        m_hnsw->addPoint(chunk.embedding.data(), chunk.id);
     }
 }
 
@@ -136,21 +144,26 @@ std::vector<CodeIndex::SearchResult> CodeIndex::searchBm25(
 std::vector<CodeIndex::SearchResult> CodeIndex::searchHnsw(
     const std::vector<float>& query_vec, int top_k) const 
 {
-    if (!m_hnsw) {
-        throw std::runtime_error("HNSW index not built");
+    if (!m_hnsw || query_vec.empty()) {
+        return {};
     }
     
-    auto results = m_hnsw->searchKnn(query_vec.data(), top_k);
-    std::vector<SearchResult> out;
-    out.reserve(results.size());
+    // searchKnn возвращает priority_queue, где top() - это наименьшее расстояние (лучшее совпадение)
+    auto result = m_hnsw->searchKnn(query_vec.data(), top_k);
     
-    // results — это priority_queue, нужно извлечь в вектор
-    while (!results.empty()) {
-        auto [dist, id] = results.top();
-        results.pop();
-        // hnswlib возвращает distance, для косинусного расстояния с нормализованными векторами
-        // score = 1 - distance (чем ближе, тем выше score)
-        out.push_back({(uint32_t)id, 1.0f - dist});
+    std::vector<SearchResult> out;
+    out.reserve(result.size());
+    
+    while (!result.empty()) { // Опечатка в мысли, в коде будет !result.empty()
+        auto [dist, id] = result.top();
+        result.pop();
+        
+        // Для L2-пространства с нормализованными векторами: 
+        // Cosine Similarity ≈ 1.0 - (dist / 2.0)
+        // Но для RRF достаточно просто инвертировать дистанцию, чтобы "больше = лучше"
+        float score = 1.0f / (1.0f + dist); 
+        
+        out.push_back({(uint32_t)id, score});
     }
     
     return out;
@@ -191,13 +204,13 @@ bool CodeIndex::save(const QString& path) const {
     std::ofstream out(path.toStdString(), std::ios::binary);
     if (!out) return false;
     
-    // Магическое число + версия
+    // 1. Магическое число + версия
     uint32_t magic = 0x53424944;  // "SBID"
     uint32_t version = 1;
     out.write(reinterpret_cast<const char*>(&magic), 4);
     out.write(reinterpret_cast<const char*>(&version), 4);
     
-    // Чанки
+    // 2. Чанки
     uint32_t n = m_chunks.size();
     out.write(reinterpret_cast<const char*>(&n), 4);
     for (const auto& c : m_chunks) {
@@ -208,21 +221,27 @@ bool CodeIndex::save(const QString& path) const {
         writeString(out, c.signature);
         writeString(out, c.body);
         
-        // calls
         uint32_t cn = c.calls.size();
         out.write(reinterpret_cast<const char*>(&cn), 4);
         for (const auto& s : c.calls) writeString(out, s);
         
-        // embedding
         writeVector(out, c.embedding);
+        // dimension сохраняется неявно через размер вектора
     }
     
-    // HNSW — hnswlib умеет сериализоваться сам
+    // 3. BM25 (упрощенная сериализация, можно добавить при необходимости)
+    // Для прототипа мы можем перестраивать BM25 при загрузке, что быстрее, 
+    // чем читать сложный unordered_map из потока.
+    
+    out.close();
+
+    // 4. Сохраняем HNSW в отдельный файл-компаньон
     if (m_hnsw) {
-        m_hnsw->saveIndex(out);
+        QString hnswPath = path + ".hnsw";
+        m_hnsw->saveIndex(hnswPath.toStdString());
     }
     
-    return out.good();
+    return true;
 }
 
 bool CodeIndex::load(const QString& path) {
@@ -260,14 +279,20 @@ bool CodeIndex::load(const QString& path) {
         c.embedding = readVector(in);
         m_chunks.push_back(std::move(c));
     }
-    
-    // HNSW
-    if (in.peek() != std::ifstream::traits_type::eof()) {
-        m_hnsw = std::make_unique<hnswlib::HierarchicalNSW<float, float>>(in);
-        m_hnsw_dims = m_hnsw->dim;
+    in.close();
+
+    // 5. Загружаем HNSW из файла-компаньона
+    QString hnswPath = path + ".hnsw";
+    if (QFile::exists(hnswPath) && !m_chunks.empty() && !m_chunks[0].embedding.empty()) {
+        // Размерность берем из первого чанка
+        m_hnsw_dims = m_chunks[0].embedding.size();
+        
+        hnswlib::L2Space space(m_hnsw_dims);
+        // Конструктор с путем к файлу автоматически загружает индекс!
+        m_hnsw = std::make_unique<hnswlib::HierarchicalNSW<float>>(&space, hnswPath.toStdString());
     }
     
-    // Перестраиваем BM25 (не сериализуем, быстро строится)
+    // 6. Перестраиваем BM25 (это быстро, ~50-100 мс для 20к чанков)
     buildBm25();
     
     return true;

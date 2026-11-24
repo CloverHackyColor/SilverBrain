@@ -54,6 +54,7 @@ public:
 
   signals:
     void modelLoaded(bool ok, const QString &error);
+    void modelUnloaded();
     void tokenReceived(const QString &piece);          // стриминг по токенам
     void generationFinished(const QString &fullText);
     void generationError(const QString &message);
@@ -69,6 +70,7 @@ public:
 
   private:
     bool ensureLoaded();
+    void unload();
     std::string buildPrompt() const;
  //   QString takeDecodableUtf8();   // отдаёт из буфера только целые UTF-8 символы
     QVariantList historyToVariant() const;
@@ -79,6 +81,8 @@ public:
     const llama_vocab *vocab   = nullptr;
     mtmd_context *mctx = nullptr;
     std::string channelHold;
+    QString currentModelPath;
+    QString currentMmprojPath;
 
     // Память диалога: пары (роль, текст). Именно это позволяет модели
     // «помнить» предыдущие ходы, а не начинать каждый ответ с нуля.
@@ -121,15 +125,9 @@ class LlamaEngine : public QObject {
     Q_INVOKABLE void clearHistory();
     Q_INVOKABLE void stopGeneration();
     Q_INVOKABLE QString readFile(const QString &path);
-    Q_INVOKABLE bool saveContext();
-    Q_INVOKABLE bool loadContext();
     Q_INVOKABLE void saveHistoryAs(const QUrl &url);
     Q_INVOKABLE void loadHistoryFrom(const QUrl &url);
-    Q_INVOKABLE void saveHistoryTo(const QString &path);
-    Q_INVOKABLE void loadHistoryFrom(const QString &path);
-
-
-
+   
     bool busy() const { return m_busy; }
     bool loading() const { return m_loading; }
     qreal loadProgress() const { return m_loadProgress; }

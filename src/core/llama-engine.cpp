@@ -914,32 +914,6 @@ static QString contextFilePath() {
   return dir + "/context.json";
 }
 
-bool LlamaEngine::saveContext() {
-  bool ok = false;
-  QMetaObject::invokeMethod(
-      m_worker, "saveHistory", Qt::BlockingQueuedConnection,
-      Q_RETURN_ARG(bool, ok), Q_ARG(QString, contextFilePath()));
-  return ok;
-}
-
-bool LlamaEngine::loadContext() {
-  bool ok = false;
-  QMetaObject::invokeMethod(
-      m_worker, "loadHistory", Qt::BlockingQueuedConnection,
-      Q_RETURN_ARG(bool, ok), Q_ARG(QString, contextFilePath()));
-  if (!ok)
-    return false;
-
-  // Забираем восстановленную историю из worker-потока
-  QVariantList msgs;
-  QMetaObject::invokeMethod(m_worker, "historyToVariant",
-                            Qt::BlockingQueuedConnection,
-                            Q_RETURN_ARG(QVariantList, msgs));
-
-  emit historyRestored(msgs);
-  return true;
-}
-
 void LlamaEngine::saveHistoryAs(const QUrl &url) {
   if (m_busy) // не сохраняем посреди генерации — история меняется на ходу
     return;
@@ -956,11 +930,5 @@ void LlamaEngine::loadHistoryFrom(const QUrl &url) {
     emit loadHistoryRequested(path);
 }
 
-void LlamaEngine::saveHistoryTo(const QString &path) {
-  emit saveHistoryRequested(path);
-}
 
-void LlamaEngine::loadHistoryFrom(const QString &path) {
-  emit loadHistoryRequested(path);
-}
 

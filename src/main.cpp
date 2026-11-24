@@ -29,7 +29,7 @@ SilverBrain/
 │           └── ChatBubble.qml    # позже: делегат вместо TextArea-конкатенации
 └── third_party/llama.cpp/
     ├── llama.cpp/
-    ├── hnswlib/*.h   # vendor (header-only)
+    ├── hnswlib/ *.h   # vendor (header-only)
     └── tree-sitter/  # субмодуль + грамматики
 
 
@@ -41,15 +41,15 @@ int main(int argc, char *argv[]) {
     //QQuickStyle::setStyle(QStringLiteral("Fusion"));
     QQmlApplicationEngine engine;
 
-    LlamaEngine llamaEngine;
-    EmbeddingEngine embeddingEngine;
-    ChatModel chatModel;
-    SilverBrainEngine silverBrainEngine(&llamaEngine, &embeddingEngine);
+    LlamaEngine *llamaEngine = new LlamaEngine(&app);
+    EmbeddingEngine *embeddingEngine = new EmbeddingEngine(&app);
+    ChatModel *chatModel = new ChatModel(&app);
+    SilverBrainEngine *silverBrain = new SilverBrainEngine(llamaEngine, embeddingEngine, &app);
     
-    engine.rootContext()->setContextProperty("llamaEngine", &llamaEngine);
-    engine.rootContext()->setContextProperty("chatModel", &chatModel);
-    engine.rootContext()->setContextProperty("silverBrainEngine", &silverBrainEngine);
-    engine.rootContext()->setContextProperty("embeddingEngine", &embeddingEngine);
+    engine.rootContext()->setContextProperty("llamaEngine", llamaEngine);
+    engine.rootContext()->setContextProperty("chatModel", chatModel);
+    engine.rootContext()->setContextProperty("silverBrain", silverBrain);
+    engine.rootContext()->setContextProperty("embeddingEngine", embeddingEngine);
 
     // Не молчим, если QML не загрузился
 #if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)

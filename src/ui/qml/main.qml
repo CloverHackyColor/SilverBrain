@@ -2,6 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.Dialogs
+import Qt.labs.platform 
 
 ApplicationWindow {
     visible: true
@@ -9,6 +10,7 @@ ApplicationWindow {
     height: 800
     title: "Silver Brain"
     color: "#f6f5f2"
+    property string selectedModelPath: ""
 
     RowLayout {
         anchors.fill: parent
@@ -30,8 +32,8 @@ ApplicationWindow {
                 id: stopButton
                 text: "Stop"
                 Layout.fillWidth: true
-                enabled: llamaEngine.busy
-                onClicked: llamaEngine.stopGeneration()
+                enabled: silverBrain.busy
+                onClicked: silverBrain.stopGeneration()
                 background: Rectangle {
                     radius: 6
                     color: parent.enabled ? (parent.hovered ? "#d94343" : "#c62828")
@@ -52,8 +54,8 @@ ApplicationWindow {
                 to: 17                    // 2^17 = 131072
                 stepSize: 1
                 editable: true
-                value: Math.round(Math.log2(llamaEngine.contextSize))
-                onValueModified: llamaEngine.contextSize = Math.pow(2, value)
+                value: Math.round(Math.log2(silverBrain.contextSize))
+                onValueModified: silverBrain.contextSize = Math.pow(2, value)
 
                 validator: RegularExpressionValidator { regularExpression: /\d{3,6}/ }
 
@@ -74,12 +76,12 @@ ApplicationWindow {
                 title: "Save history"
                 nameFilters: ["SilverBrain chat (*.sbc)"]
                 defaultSuffix: "sbc"
-                currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
+                //currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
+                folder: Qt.resolvedUrl(StandardPaths.writableLocation(StandardPaths.DocumentsLocation))
                 onAccepted: {
-                    var path = selectedFile.toString()
-                    if (path.startsWith("file://"))
-                        path = decodeURIComponent(path.substring(7))
-                    llamaEngine.saveHistoryTo(path)
+                    var path = selectedFile.toLocalFile()
+                    silverBrain.saveHistoryAs(path)
+                    console.log("Saving history to:", path)
                 }
             }
             FileDialog {
@@ -87,12 +89,12 @@ ApplicationWindow {
                 fileMode: FileDialog.OpenFile
                 title: "Load history"
                 nameFilters: ["SilverBrain chat (*.sbc)"]
-                currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
+                //currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
+                folder: Qt.resolvedUrl(StandardPaths.writableLocation(StandardPaths.DocumentsLocation))
                 onAccepted: {
-                    var path = selectedFile.toString()
-                    if (path.startsWith("file://"))
-                        path = decodeURIComponent(path.substring(7))
-                    llamaEngine.loadHistoryFrom(path)
+                    var path = selectedFile.toLocalFile()
+                    silverBrain.loadHistoryFrom(path)
+                    console.log("Load history from:", path)
                 }
             }
 
@@ -104,41 +106,41 @@ ApplicationWindow {
                 }
                 Button {
                     text: "Load ctx"
-                    enabled: !llamaEngine.busy && !llamaEngine.loading
+                    enabled: !silverBrain.busy && !silverBrain.loading
                     onClicked: loadDialog.open()
                 }
             }
 
-            Label { text: "Temperature: " + llamaEngine.temperature.toFixed(2); color: "#26251f" }
+            Label { text: "Temperature: " + silverBrain.temperature.toFixed(2); color: "#26251f" }
             Slider {
                 Layout.fillWidth: true
                 from: 0; to: 2; stepSize: 0.05
-                value: llamaEngine.temperature
-                onMoved: llamaEngine.temperature = value
+                value: silverBrain.temperature
+                onMoved: silverBrain.temperature = value
             }
 
-            Label { text: "Repeat penalty: " + llamaEngine.repeatPenalty.toFixed(2); color: "#26251f" }
+            Label { text: "Repeat penalty: " + silverBrain.repeatPenalty.toFixed(2); color: "#26251f" }
             Slider {
                 Layout.fillWidth: true
                 from: 1; to: 2; stepSize: 0.05
-                value: llamaEngine.repeatPenalty
-                onMoved: llamaEngine.repeatPenalty = value
+                value: silverBrain.repeatPenalty
+                onMoved: silverBrain.repeatPenalty = value
             }
 
-            Label { text: "Presence: " + llamaEngine.presencePenalty.toFixed(2); color: "#26251f" }
+            Label { text: "Presence: " + silverBrain.presencePenalty.toFixed(2); color: "#26251f" }
             Slider {
                 Layout.fillWidth: true
                 from: 0; to: 2; stepSize: 0.05
-                value: llamaEngine.presencePenalty
-                onMoved: llamaEngine.presencePenalty = value
+                value: silverBrain.presencePenalty
+                onMoved: silverBrain.presencePenalty = value
             }
 
-            Label { text: "Frequency: " + llamaEngine.frequencyPenalty.toFixed(2); color: "#26251f" }
+            Label { text: "Frequency: " + silverBrain.frequencyPenalty.toFixed(2); color: "#26251f" }
             Slider {
                 Layout.fillWidth: true
                 from: 0; to: 2; stepSize: 0.05
-                value: llamaEngine.frequencyPenalty
-                onMoved: llamaEngine.frequencyPenalty = value
+                value: silverBrain.frequencyPenalty
+                onMoved: silverBrain.frequencyPenalty = value
             }
 
             Item { Layout.fillHeight: true }   // распорка прижимает всё вверх
@@ -175,20 +177,25 @@ ApplicationWindow {
                         //selectedNameFilterExtensions: ["*.gguf"]
                         onAccepted: {
                             // currentFile — локальный URL выбранного файла
-                            var path = selectedFile.toString()
-                            if (path.startsWith("file://"))
-                                path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
+                            var path = QUrl(selectedFile).toLocalFile()
+                        //    if (path.startsWith("file://"))
+                        //        path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
                             modelPathField.text = path 
                             console.log("Model loading: ", selectedModelPath)
-                            llamaEngine.loadModel(path)  // mmproj будет по-умолчанию ""
-                        }
-                                     
+                            silverBrain.loadModel(path)  // mmproj будет по-умолчанию ""
+                        }                                    
                     }
                     Button {
                         text: "Load model"
                         background: Rectangle { radius: 6; color: "#e7e4de" }
-                        enabled: !llamaEngine.busy
-                        onClicked: modelFileDialog.open()
+                        onClicked: {
+                            if (silverBrain.busy) {
+                                console.log("Engine busy")
+                                return
+                            }
+                            modelFileDialog.open()
+                        }
+                        enabled: !silverBrain.busy && selectedModelPath !== ""
                     }
         /*            FileDialog {
                         id: mmprojDialog
@@ -198,7 +205,7 @@ ApplicationWindow {
                             var path = selectedFile.toString()
                             if (path.startsWith("file://"))
                                 path = decodeURIComponent(path.substring(7))
-                            llamaEngine.mmprojPath = path
+                            silverBrain.mmprojPath = path
                         }
                     }
                     */
@@ -214,12 +221,12 @@ ApplicationWindow {
 
                 ProgressBar {
                     id: loadBar
-                    visible: llamaEngine.loading
+                    visible: silverBrain.loading
                     Layout.fillWidth: true
                     Layout.preferredHeight: 4
                     from: 0
                     to: 1
-                    value: llamaEngine.loadProgress
+                    value: silverBrain.loadProgress
                     background: null                    // убираем подложку и её отступы
                     contentItem: Item {
                         Rectangle {
@@ -318,7 +325,7 @@ ApplicationWindow {
                             color: "#ffffff"
                             border.color: "#d9d6cf"
                         }
-                        enabled: !llamaEngine.busy
+                        enabled: !silverBrain.busy
                         placeholderText: "Type your message..."
                           // Отправка — Cmd+Enter / Ctrl+Enter или кнопкой
                         Keys.onPressed: (event) => {
@@ -337,19 +344,19 @@ ApplicationWindow {
                             var path = selectedFile.toString()
                             if (path.startsWith("file://"))
                                 path = decodeURIComponent(path.substring(7))
-                            llamaEngine.imagePath = path
+                            silverBrain.imagePath = path
                         } 
                     }
                     Button {
                         text: "📎"
-                        enabled: !llamaEngine.busy
+                        enabled: !silverBrain.busy
                         onClicked: attachDialog.open()
                     }
                     Label {
-                        text: llamaEngine.imagePath !== "" ? "🖼 " + llamaEngine.imagePath.split("/").pop() : ""
+                        text: silverBrain.imagePath !== "" ? "🖼 " + silverBrain.imagePath.split("/").pop() : ""
                         visible: text !== ""
                         color: "#2f6feb"
-                        MouseArea { anchors.fill: parent; onClicked: llamaEngine.imagePath = "" }
+                        MouseArea { anchors.fill: parent; onClicked: silverBrain.imagePath = "" }
                     }     
                     Button {
                         text: "Send"
@@ -360,16 +367,16 @@ ApplicationWindow {
                             }
                         contentItem: Text { text: parent.text; color: "#ffffff"
                                 horizontalAlignment: Text.AlignHCenter }
-                        enabled: !llamaEngine.busy
+                        enabled: !silverBrain.busy
                         onClicked: sendMessage()
                     }
                     Button {
                         text: "Clear"
                         background: Rectangle { radius: 6; color: "#e7e4de" }
-                        enabled: !llamaEngine.busy
+                        enabled: !silverBrain.busy
                         onClicked: {
                             chatModel.clear()
-                            llamaEngine.clearHistory()
+                            silverBrain.clearHistory()
                         }
                     }
                 }
@@ -387,15 +394,15 @@ ApplicationWindow {
         chatModel.addMessage("assistant", "")
 
         inputField.text = ""
-        llamaEngine.generateAsync(message)
+        silverBrain.generateAsync(message)
     }
 
     Connections {
-        target: llamaEngine
+        target: silverBrain
         function onLoadProgressChanged() {
-            if (llamaEngine.loading)
+            if (silverBrain.loading)
                 statusLabel.text = "Model loading...: " +
-                    Math.round(llamaEngine.loadProgress * 100) + "%"
+                    Math.round(silverBrain.loadProgress * 100) + "%"
         }
 
         function onModelLoaded(ok, error) {

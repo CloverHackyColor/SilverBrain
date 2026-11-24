@@ -41,8 +41,26 @@ add_subdirectory(third_party/llama.cpp)
 # tree-sitter
 add_subdirectory(third_party/tree-sitter)
 
+# 2. Исходники парсера для C++ (добавляем их прямо в наш проект)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-cpp/src/scanner.cpp")
+    set(TREE_SITTER_CPP_SCANNER "third_party/tree-sitter-cpp/src/scanner.cpp")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-cpp/src/scanner.cc")
+    set(TREE_SITTER_CPP_SCANNER "third_party/tree-sitter-cpp/src/scanner.cc")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-cpp/src/scanner.c")
+    set(TREE_SITTER_CPP_SCANNER "third_party/tree-sitter-cpp/src/scanner.c")
+else()
+    message(FATAL_ERROR "Cannot find scanner file in third_party/tree-sitter-cpp/src/")
+endif()
+
+set(TREE_SITTER_CPP_SOURCES
+    third_party/tree-sitter-cpp/src/parser.c
+    ${TREE_SITTER_CPP_SCANNER}
+)
+# Отключаем предупреждения для стороннего сгенерированного кода, чтобы не засорять вывод
+set_source_files_properties(${TREE_SITTER_CPP_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
+
 # tree-sitter-cpp
-add_subdirectory(third_party/tree-sitter-cpp)
+#add_subdirectory(third_party/tree-sitter-cpp)
 
 get_target_property(GGML_METAL_BINARY_DIR ggml-metal BINARY_DIR)
 get_target_property(GGML_METAL_SOURCE_DIR ggml-metal SOURCE_DIR)
@@ -79,6 +97,7 @@ add_executable(SilverBrain
     src/core/silverbrain-engine.h
     src/core/silverbrain-engine.cpp
     ${QML_RESOURCES}
+    ${TREE_SITTER_CPP_SOURCES} 
 )
 
 
@@ -308,9 +327,12 @@ target_link_libraries(SilverBrain
     Qt${QT_VERSION_MAJOR}::QuickControls2 
     llama
     mtmd 
+    tree-sitter 
 )
 target_include_directories(SilverBrain PRIVATE
-    third_party/llama.cpp/tools/mtmd  # <- и сюда
+    third_party/llama.cpp/tools/mtmd
+    third_party/tree-sitter/lib/include  # <-- Здесь лежит tree_sitter/api.h
+    third_party/hnswlib                  # <-- Для hnswlib/hnswlib.h
 )
 
 if(APPLE)

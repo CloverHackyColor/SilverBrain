@@ -7,11 +7,7 @@
 #include <unordered_map>
 #include <string>
 
-// Forward declaration для hnswlib
-namespace hnswlib {
-    template<typename T, typename dist_t>
-    class HierarchicalNSW;
-}
+#include "hnswlib.h"
 
 class CodeIndex {
 public:
@@ -56,6 +52,6 @@ private:
     } m_bm25;
     
     // HNSW индекс
-    std::unique_ptr<hnswlib::HierarchicalNSW<float, float>> m_hnsw;
+    std::unique_ptr<hnswlib::HierarchicalNSW<float>> m_hnsw;
     int m_hnsw_dims = 0;
 };
