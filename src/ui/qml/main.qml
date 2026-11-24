@@ -177,28 +177,12 @@ ApplicationWindow {
                             // currentFile — локальный URL выбранного файла
                             var path = selectedFile.toString()
                             if (path.startsWith("file://"))
-                            path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
+                                path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
                             modelPathField.text = path 
-                            let emptyMmprojPath = ""
                             console.log("Model loading: ", selectedModelPath)
-                            llamaEngine.loadModel(path, emptyMmprojPath)
+                            llamaEngine.loadModel(path)  // mmproj будет по-умолчанию ""
                         }
-                        
-           /*                 onAccepted: {
-                                let selectedModelPath = fileUrl.toLocalFile()
-                                
-                                // Мы намеренно передаем "" в качестве mmprojPath.
-                                // C++ код (MmprojAutoDetect::findDefault) сам найдет нужный файл в папке,
-                                // либо проверит QSettings на наличие ручного переопределения для этой модели.
-                                let emptyMmprojPath = ""
-                                let contextSize = 4096 // или из ваших настроек
-                                
-                                console.log("Загрузка модели:", selectedModelPath)
-                                
-                                // Вызываем наш обновленный метод
-                                llamaWorker.load(selectedModelPath, emptyMmprojPath, contextSize)
-                            }
-             */               
+                                     
                     }
                     Button {
                         text: "Load model"

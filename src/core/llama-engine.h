@@ -116,7 +116,7 @@ class LlamaEngine : public QObject {
     explicit LlamaEngine(QObject *parent = nullptr);
     ~LlamaEngine() override;
 
-    Q_INVOKABLE void loadModel(const QString &modelPath, const QString &mmprojPath);
+    Q_INVOKABLE void loadModel(const QString &modelPath, const QString &mmprojPath = "");
     Q_INVOKABLE void generateAsync(const QString &prompt);
     Q_INVOKABLE void clearHistory();
     Q_INVOKABLE void stopGeneration();
