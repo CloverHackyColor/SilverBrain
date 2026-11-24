@@ -9,6 +9,24 @@ EmbeddingWorker::~EmbeddingWorker() {
     if (m_model) llama_model_free(m_model);
 }
 
+bool EmbeddingWorker::decodeTokens(llama_context *ctx, const llama_token *tokens, int32_t n,
+                    llama_pos firstPos) {
+    llama_batch_ext *b = llama_batch_ext_init(ctx);
+    if (!b)
+      return false;
+    for (int32_t i = 0; i < n; ++i) {
+      const int32_t idx = llama_batch_ext_add_token(b, 0, tokens[i]);
+      llama_pos p = firstPos + i;
+      llama_batch_ext_set_pos(b, idx, &p);
+      if (i == n - 1)
+        llama_batch_ext_set_output_logits(b, idx, true);
+    }
+    const int32_t r = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, b);
+    llama_batch_ext_free(b);
+    return r == 0;
+}
+  
+
 void EmbeddingWorker::load(const QString& modelPath) {
     if (m_model) {
         emit modelLoaded(true, {});
@@ -74,11 +92,23 @@ std::vector<float> EmbeddingWorker::encode(const QString& text) {
     }
     
     // Декод
-    llama_memory_clear(llama_get_memory(m_ctx), true);
-    llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
+    // llama_memory_clear(llama_get_memory(m_ctx), true);
+    // llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
     
-    if (llama_decode(m_ctx, batch) != 0) {
-        throw std::runtime_error("llama_decode failed in embedding");
+    // if (llama_decode(m_ctx, batch) != 0) {
+    //     throw std::runtime_error("llama_decode failed in embedding");
+    // }
+
+    const int32_t nBatch = static_cast<int32_t>(llama_n_batch(m_ctx));
+    const int32_t nTok = static_cast<int32_t>(tokens.size());
+    for (int32_t pos = 0; pos < nTok; ) {
+      const int32_t chunk = std::min(nBatch, nTok - pos);
+      if (!decodeTokens(m_ctx, tokens.data() + pos, chunk, nextPos)) {
+        emit generationError(QStringLiteral("embedding_process failed"));
+        return;
+      }
+      pos += chunk;
+      emit promptProgress(static_cast<int>(pos * 100 / nTok));
     }
     
     // Извлечение embedding

@@ -25,6 +25,7 @@ private:
     const llama_vocab* m_vocab = nullptr;
     int m_dims = 0;
     int m_nCtx = 0;
+    bool decodeTokens(llama_context *ctx, const llama_token *tokens, int32_t n, llama_pos firstPos);
 };
 
 class EmbeddingEngine : public QObject {
