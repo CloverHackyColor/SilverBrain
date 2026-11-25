@@ -42,6 +42,8 @@ public:
     Q_INVOKABLE void generateAsync(const QString& prompt);
     Q_INVOKABLE void clearHistory() { m_llm->clearHistory(); }
     Q_INVOKABLE void stopGeneration() { m_llm->stopGeneration(); }
+    Q_INVOKABLE void saveHistoryAs(const QUrl &url) { m_llm->saveHistoryAs(url); }
+    Q_INVOKABLE void loadHistoryFrom(const QUrl &url) { m_llm->loadHistoryFrom(url); }
     
     // Управление индексом
     Q_INVOKABLE void buildIndex();
@@ -75,11 +77,6 @@ public:
     void setFrequencyPenalty(qreal v) { m_llm->setFrequencyPenalty(v); }
     void setImagePath(const QString &v) { m_llm->setImagePath(v); }
 
-    bool indexReady() const { return m_index.isBuilt(); }
-    bool isIndexing() const { return m_isIndexing; }
-    float indexProgress() const { return m_indexProgress; }
-    QString indexingStatus() const { return m_indexingStatus; }
-
   signals:
     // Проксирование сигналов LlamaEngine
     void modelLoaded(bool ok, const QString& error);
@@ -97,6 +94,10 @@ public:
     void imagePathChanged();
     void historyRestored(const QVariantList& messages);
     void promptProgress(int percent);
+    void genSpeed(double tokensPerSec);
+    void contextFree(int cellsLeft);
+    void statsAppended(QString line);
+    void historySaved(bool ok);
 
     // Свои сигналы
     void projectPathChanged();
@@ -106,6 +107,8 @@ public:
     void indexingStatusChanged();
     
 private slots:
+    void onLlmModelLoaded(bool ok, const QString& error);
+    void onModelUnloaded();
     void onRetrievalFinished(const QStringList& relevantChunks);
     void onRetrievalError(const QString& error);
     void onIndexerProgress(float percent, const QString& currentFile);
@@ -120,6 +123,7 @@ private:
     
     QString m_projectPath;
     QString m_pendingPrompt;
+    QString m_pendingEmbeddingPath;
     bool m_isIndexing = false;
     float m_indexProgress = 0.0f;
     QString m_indexingStatus;

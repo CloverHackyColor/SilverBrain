@@ -31,11 +31,11 @@ set(GGML_NATIVE          ON  CACHE BOOL "" FORCE)
 if(APPLE)
    # Метал-шейдер вкомпилирован в бинарник — .app самодостаточен
     set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
+
+    set(MACOS_RES_DIR ${CMAKE_SOURCE_DIR}/platforms/macos)
+
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-const-variable -Wno-unused-function")
 endif()
-set(MACOS_RES_DIR ${CMAKE_SOURCE_DIR}/platforms/macos)
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-const-variable -Wno-unused-function")
-
 
 add_subdirectory(third_party/llama.cpp)
 # tree-sitter
@@ -61,14 +61,14 @@ set_source_files_properties(${TREE_SITTER_CPP_SOURCES} PROPERTIES COMPILE_FLAGS 
 
 # tree-sitter-cpp
 #add_subdirectory(third_party/tree-sitter-cpp)
+if(APPLE)
+    get_target_property(GGML_METAL_BINARY_DIR ggml-metal BINARY_DIR)
+    get_target_property(GGML_METAL_SOURCE_DIR ggml-metal SOURCE_DIR)
 
-get_target_property(GGML_METAL_BINARY_DIR ggml-metal BINARY_DIR)
-get_target_property(GGML_METAL_SOURCE_DIR ggml-metal SOURCE_DIR)
-
-set(GGML_METAL_INCLUDE_DIR
-    "${GGML_METAL_SOURCE_DIR}/.."
-)
-
+    set(GGML_METAL_INCLUDE_DIR
+        "${GGML_METAL_SOURCE_DIR}/.."
+    )
+endif()
 qt_add_resources(QML_RESOURCES src/ui/qml.qrc)
 
 # ---------------------------------------------------------------- Windows ---
@@ -248,25 +248,25 @@ if(APPLE AND GGML_METAL_EMBED_LIBRARY AND TARGET ggml-metal)
     )
 
     file(WRITE "${SILVERBRAIN_METAL_FINGERPRINT_SCRIPT}" [=[
-if(NOT DEFINED SOURCE_DIR OR NOT DEFINED OUTPUT_FILE OR NOT DEFINED KERNEL_NAMES)
-    message(FATAL_ERROR "Missing fingerprint script arguments")
-endif()
+        if(NOT DEFINED SOURCE_DIR OR NOT DEFINED OUTPUT_FILE OR NOT DEFINED KERNEL_NAMES)
+            message(FATAL_ERROR "Missing fingerprint script arguments")
+        endif()
 
-set(content "")
+        set(content "")
 
-foreach(kind IN LISTS KERNEL_NAMES)
-    set(source "${SOURCE_DIR}/ggml-metal-embed-${kind}.metal")
+        foreach(kind IN LISTS KERNEL_NAMES)
+            set(source "${SOURCE_DIR}/ggml-metal-embed-${kind}.metal")
 
-    if(NOT EXISTS "${source}")
-        message(FATAL_ERROR "Missing generated Metal source: ${source}")
-    endif()
+            if(NOT EXISTS "${source}")
+                message(FATAL_ERROR "Missing generated Metal source: ${source}")
+            endif()
 
-    file(SHA256 "${source}" hash)
-    string(APPEND content "${kind} ${hash}\n")
-endforeach()
+            file(SHA256 "${source}" hash)
+            string(APPEND content "${kind} ${hash}\n")
+        endforeach()
 
-file(WRITE "${OUTPUT_FILE}" "${content}")
-]=])
+        file(WRITE "${OUTPUT_FILE}" "${content}")
+        ]=])
 
     add_custom_command(
         OUTPUT "${SILVERBRAIN_METAL_FINGERPRINT}"
@@ -378,6 +378,20 @@ endif()
 if(WIN32)
     find_program(WINDEPLOYQT_EXE windeployqt
                  HINTS "${Qt${QT_VERSION_MAJOR}_DIR}/../../../bin")
+
+    set(SILVERBRAIN_RUNTIME_DLLS)
+    foreach(runtime_target IN ITEMS llama mtmd tree-sitter ggml ggml-base ggml-cpu)
+        if(TARGET ${runtime_target})
+            list(APPEND SILVERBRAIN_RUNTIME_DLLS "$<TARGET_FILE:${runtime_target}>")
+        endif()
+    endforeach()
+
+    add_custom_command(TARGET SilverBrain POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${SILVERBRAIN_RUNTIME_DLLS}
+                $<TARGET_FILE_DIR:SilverBrain>
+        COMMAND_EXPAND_LISTS
+        COMMENT "Copying SilverBrain runtime DLLs")
 endif()
 
 if(WIN32 AND DEPLOY)
@@ -392,10 +406,6 @@ if(WIN32 AND DEPLOY)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     ${CMAKE_SOURCE_DIR}/platforms/windows/qt.conf
                     $<TARGET_FILE_DIR:SilverBrain>/qt.conf
-            # и llama.dll, если она не влита статически
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    $<TARGET_FILE:llama>
-                    $<TARGET_FILE_DIR:SilverBrain>
             COMMENT "Deploying Qt runtime (windeployqt)")
     endif()
 endif()

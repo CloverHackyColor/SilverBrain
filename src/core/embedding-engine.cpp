@@ -12,8 +12,22 @@ namespace {
 
 // ============================ EmbeddingWorker ==============================
 EmbeddingWorker::~EmbeddingWorker() {
+    releaseModel();
+}
+
+void EmbeddingWorker::releaseModel() {
     if (m_ctx) llama_free(m_ctx);
+    m_ctx = nullptr;
     if (m_model) llama_model_free(m_model);
+    m_model = nullptr;
+    m_vocab = nullptr;
+    m_dims = 0;
+    m_nCtx = 0;
+}
+
+void EmbeddingWorker::unload() {
+    releaseModel();
+    emit modelUnloaded();
 }
 
 bool EmbeddingWorker::decodeTokens(llama_context *ctx, const llama_token *tokens, int32_t n,
@@ -178,6 +192,7 @@ EmbeddingEngine::EmbeddingEngine(QObject* parent) : QObject(parent) {
     
     connect(this, &EmbeddingEngine::loadModelRequested, m_worker, &EmbeddingWorker::load, Qt::QueuedConnection);
     connect(m_worker, &EmbeddingWorker::modelLoaded, this, &EmbeddingEngine::onModelLoaded);
+    connect(m_worker, &EmbeddingWorker::modelUnloaded, this, &EmbeddingEngine::onModelUnloaded);
     
     m_thread.start();
 }
@@ -189,6 +204,18 @@ EmbeddingEngine::~EmbeddingEngine() {
 
 void EmbeddingEngine::loadModel(const QString& modelPath) {
     emit loadModelRequested(modelPath);
+}
+
+bool EmbeddingEngine::unloadModel() {
+    if (!QMetaObject::invokeMethod(m_worker, "unload", Qt::BlockingQueuedConnection)) {
+        return false;
+    }
+
+    if (m_loaded) {
+        m_loaded = false;
+        emit loadedChanged();
+    }
+    return true;
 }
 
 std::vector<float> EmbeddingEngine::encode(const QString& text) {
@@ -213,4 +240,11 @@ void EmbeddingEngine::onModelLoaded(bool ok, const QString& error) {
     m_loaded = ok;
     emit loadedChanged();
     emit modelLoaded(ok, error);
+}
+
+void EmbeddingEngine::onModelUnloaded() {
+    if (m_loaded) {
+        m_loaded = false;
+        emit loadedChanged();
+    }
 }

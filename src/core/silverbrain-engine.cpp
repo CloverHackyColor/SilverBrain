@@ -11,7 +11,9 @@ SilverBrainEngine::SilverBrainEngine(LlamaEngine* llm, EmbeddingEngine* emb, QOb
 {
     // Проксирование сигналов LlamaEngine
     connect(m_llm, &LlamaEngine::modelLoaded, this,
-            &SilverBrainEngine::modelLoaded);
+            &SilverBrainEngine::onLlmModelLoaded);
+    connect(m_llm, &LlamaEngine::modelUnloaded, this,
+            &SilverBrainEngine::onModelUnloaded);
     connect(m_llm, &LlamaEngine::tokenReceived, this,
             &SilverBrainEngine::tokenReceived);
     connect(m_llm, &LlamaEngine::generationFinished, this,
@@ -41,6 +43,14 @@ SilverBrainEngine::SilverBrainEngine(LlamaEngine* llm, EmbeddingEngine* emb, QOb
 
     connect(m_llm, &LlamaEngine::promptProgress, this,
             &SilverBrainEngine::promptProgress);
+    connect(m_llm, &LlamaEngine::genSpeed, this,
+            &SilverBrainEngine::genSpeed);
+    connect(m_llm, &LlamaEngine::contextFree, this,
+            &SilverBrainEngine::contextFree);
+    connect(m_llm, &LlamaEngine::statsAppended, this,
+            &SilverBrainEngine::statsAppended);
+    connect(m_llm, &LlamaEngine::historySaved, this,
+            &SilverBrainEngine::historySaved);
 
     // Indexer
     m_indexer = new CodeIndexer(m_emb, this);
@@ -72,6 +82,21 @@ void SilverBrainEngine::setProjectPath(const QString& path) {
     if (path != m_projectPath) {
         m_projectPath = path;
         emit projectPathChanged();
+    }
+}
+
+void SilverBrainEngine::onLlmModelLoaded(bool ok, const QString& error) {
+    emit modelLoaded(ok, error);
+
+    if (ok && !m_pendingEmbeddingPath.isEmpty()) {
+        m_emb->loadModel(m_pendingEmbeddingPath);
+    }
+    m_pendingEmbeddingPath.clear();
+}
+
+void SilverBrainEngine::onModelUnloaded() {
+    if (!m_emb->unloadModel()) {
+        emit generationError("Failed to unload embedding model");
     }
 }
 
@@ -167,10 +192,13 @@ void SilverBrainEngine::onIndexerFinished(bool success, const QString& error) {
 }
 
 void SilverBrainEngine::loadModel(const QString& modelPath) {
-    // 1. Загружаем основную LLM (проксируем вызов)
-    m_llm->loadModel(modelPath);
+    if (m_llm->busy() || modelPath.isEmpty()) {
+        return;
+    }
+
+    m_pendingEmbeddingPath.clear();
     
-    // 2. Автоматически ищем и загружаем embedding-модель в той же папке
+    // Автоматически ищем embedding-модель в той же папке.
     QFileInfo fi(modelPath);
     QDir dir = fi.absoluteDir();
     
@@ -184,17 +212,13 @@ void SilverBrainEngine::loadModel(const QString& modelPath) {
     QStringList embedFiles = dir.entryList();
     
     if (!embedFiles.isEmpty()) {
-        // Берем первый найденный подходящий файл
-        QString embedPath = dir.absoluteFilePath(embedFiles.first());
-        qDebug() << "[SilverBrain] Auto-discovered embedding model:" << embedPath;
-        
-        // Загружаем её асинхронно
-        m_emb->loadModel(embedPath);
+        m_pendingEmbeddingPath = dir.absoluteFilePath(embedFiles.first());
+        qDebug() << "[SilverBrain] Auto-discovered embedding model:"
+                 << m_pendingEmbeddingPath;
     } else {
         qDebug() << "[SilverBrain] Embedding model not found in" << dir.absolutePath();
         qDebug() << "[SilverBrain] Tip: Place nomic-embed-text-v1.5-Q8_0.gguf next to your LLM model for semantic search.";
-        
-        // Опционально: можно отправить сигнал в QML, чтобы показать ненавязчивое 
-        // информационное сообщение (например, желтый значок рядом с названием модели)
     }
+
+    m_llm->loadModel(modelPath);
 }

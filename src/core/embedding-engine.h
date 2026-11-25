@@ -14,13 +14,16 @@ public:
     
 public slots:
     void load(const QString& modelPath);
+    void unload();
     std::vector<float> encode(const QString& text);
     int dimensions() const { return m_dims; } 
     
 signals:
     void modelLoaded(bool ok, const QString& error);
+    void modelUnloaded();
     
 private:
+    void releaseModel();
     llama_model* m_model = nullptr;
     llama_context* m_ctx = nullptr;
     const llama_vocab* m_vocab = nullptr;
@@ -38,6 +41,7 @@ public:
     ~EmbeddingEngine() override;
     
     Q_INVOKABLE void loadModel(const QString& modelPath);
+    bool unloadModel();
     std::vector<float> encode(const QString& text);  // блокирующий вызов
     int dimensions() const;
     bool loaded() const { return m_loaded; }
@@ -49,6 +53,7 @@ signals:
     
 private slots:
     void onModelLoaded(bool ok, const QString& error);
+    void onModelUnloaded();
     
 private:
     QThread m_thread;

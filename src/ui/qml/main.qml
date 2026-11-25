@@ -1,8 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import QtQuick.Dialogs
-import Qt.labs.platform 
+import Qt.labs.platform 1.1
 
 ApplicationWindow {
     visible: true
@@ -180,7 +179,9 @@ ApplicationWindow {
                             var path = QUrl(selectedFile).toLocalFile()
                         //    if (path.startsWith("file://"))
                         //        path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
-                            modelPathField.text = path 
+                            selectedModelPath = path
+                            modelPathField.text = path.substring(
+                                Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1)
                             console.log("Model loading: ", selectedModelPath)
                             silverBrain.loadModel(path)  // mmproj будет по-умолчанию ""
                         }                                    
@@ -195,7 +196,7 @@ ApplicationWindow {
                             }
                             modelFileDialog.open()
                         }
-                        enabled: !silverBrain.busy && selectedModelPath !== ""
+                        enabled: !silverBrain.busy
                     }
         /*            FileDialog {
                         id: mmprojDialog
@@ -429,7 +430,7 @@ ApplicationWindow {
         function onHistoryRestored(msgs) {
             chatModel.clear()
             for (var i = 0; i < msgs.length; i++)
-                chatModel.append({ role: msgs[i].role, text: msgs[i].text })
+                chatModel.addMessage(msgs[i].role, msgs[i].text)
         }
         function onPromptProgress(p) {
             promptBar.visible = true

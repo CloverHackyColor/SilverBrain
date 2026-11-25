@@ -186,6 +186,7 @@ class LlamaEngine : public QObject {
   signals:
     // Публичные сигналы для QML (просто ретрансляция сигналов worker'а)
     void modelLoaded(bool ok, const QString &error);
+    void modelUnloaded();
     void tokenReceived(const QString &piece);
     void generationFinished(const QString &fullText);
     void generationError(const QString &message);

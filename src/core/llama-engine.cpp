@@ -242,7 +242,7 @@ void LlamaWorker::load(const QString &modelPath, QString mmprojPath, int nCtx) {
 
   // ГАРАНТИРОВАННАЯ ОЧИСТКА ПЕРЕД ЗАГРУЗКОЙ НОВОГО
   if (model) {
-      unload(); 
+      unload();
   }
 
   stopRequested.store(false);
@@ -779,7 +779,12 @@ void LlamaWorker::unload() {
     // 1. Останавливаем любые текущие вычисления
     stopRequested.store(true);
 
-    // 2. ОСВОБОЖДАЕМ КОНТЕКСТ ПРОЕКТОРА (Критически важно!)
+    if (sampler) {
+        llama_sampler_free(sampler);
+        sampler = nullptr;
+    }
+
+    // 2. Освобождаем контекст проектора
     if (mctx) {
         mtmd_free(mctx);
         mctx = nullptr;
@@ -816,6 +821,8 @@ LlamaEngine::LlamaEngine(QObject *parent) : QObject(parent) {
     connect(this, &LlamaEngine::loadHistoryRequested,  m_worker, &LlamaWorker::loadHistory);
     connect(m_worker, &LlamaWorker::loadProgress,      this, &LlamaEngine::setLoadProgress);
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::modelLoaded);
+    connect(m_worker, &LlamaWorker::modelUnloaded,     this, &LlamaEngine::modelUnloaded,
+            Qt::BlockingQueuedConnection);
     connect(m_worker, &LlamaWorker::modelLoaded,       this, &LlamaEngine::onWorkFinished);
     connect(m_worker, &LlamaWorker::tokenReceived,     this, &LlamaEngine::tokenReceived);
     connect(m_worker, &LlamaWorker::generationFinished,this, &LlamaEngine::generationFinished);
