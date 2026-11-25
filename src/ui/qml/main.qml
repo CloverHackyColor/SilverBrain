@@ -256,16 +256,24 @@ ApplicationWindow {
                     }
                 }
                 Label {
-                    id: liveStats
-                    visible: text !== ""
-                    font.pixelSize: 11
-                    color: "#8a877e"
-                }
-                Label {
-                    id: freeLabel
-                    visible: text !== ""
-                    font.pixelSize: 11
-                    color: "#8a877e"
+                    id: generationStats
+                    // Показываем только когда модель занята генерацией (но не загрузкой)
+                    visible: silverBrain.busy && !silverBrain.loading 
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    font.pixelSize: 12
+                    font.italic: true
+                    color: "#2f6feb" // Синий цвет активности
+                    
+                    // Внутренние свойства для хранения последних значений
+                    property int currentTokens: 0
+                    property int currentFree: 0
+                    property string currentSpeed: "0.0"
+                    
+                    // Формируем живую строку
+                    text: "💭 Thinking... Generated: " + currentTokens + 
+                        " tok. | Free: " + currentFree + 
+                        " | Speed: " + currentSpeed + " t/s"
                 }
 
 
@@ -293,17 +301,24 @@ ApplicationWindow {
                         }
                         Component {
                             id: statsRow
-                            Label {
+                            Rectangle {
                                 width: parent.width
-                                horizontalAlignment: Text.AlignHCenter
-                                font.pixelSize: 11
-                                color: "#8a877e"
-                                text: model.text
-                                wrapMode: Text.WrapAnywhere
+                                height: childrenRect.height + 16
+                                color: "transparent" // Или "#f3f4f6" для легкой подложки
+                                
+                                Label {
+                                    anchors.centerIn: parent
+                                    width: parent.width - 32
+                                    horizontalAlignment: Text.AlignHCenter
+                                    font.pixelSize: 11
+                                    font.italic: true       // Курсив отличает от текста модели
+                                    color: "#6b7280"        // Нейтральный серый цвет
+                                    text: model.text
+                                    wrapMode: Text.WrapAnywhere
+                                }
                             }
                         }
                     }
-
 
                     // Автопрокрутка вниз при новых токенах
                     onCountChanged: positionViewAtEnd()
@@ -417,15 +432,21 @@ ApplicationWindow {
             // Дописываем в последнее сообщение (пустое, созданное в sendMessage)
             chatModel.appendToLast(piece)
         }
+        function onTokensGenerated(count) {
+            generationStats.currentTokens = count
+        }
         function onGenerationFinished(fullText) {
             promptBar.visible = false
             promptBar.value = 0
-            liveStats.text = ""
+            // Очищаем статистику после завершения
+            generationStats.currentTokens = 0
+            generationStats.currentSpeed = "0.0"
         }
         function onGenerationError(message) {
             chatModel.appendToLast("[Error] " + message)
             promptBar.visible = false
             promptBar.value = 0
+            generationStats.currentTokens = 0
         }
         function onHistoryRestored(msgs) {
             chatModel.clear()
@@ -437,10 +458,12 @@ ApplicationWindow {
             promptBar.value = p
         }
         function onGenSpeed(tps) {
-            liveStats.text = "Speed: " + Number(tps).toFixed(1) + " ток/с"
+           // liveStats.text = "Speed: " + Number(tps).toFixed(1) + " ток/с"
+           generationStats.currentSpeed = Number(tps).toFixed(1)
         }
         function onContextFree(cells) {
-            freeLabel.text = "Free context: " + cells + " ток."
+            // freeLabel.text = "Free context: " + cells + " ток."
+            generationStats.currentFree = cells
         }
         function onStatsAppended(line) {
             chatModel.addMessage("stats", line)

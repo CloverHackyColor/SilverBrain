@@ -65,7 +65,7 @@ public:
     void statsAppended(const QString &line); // строка статистики хода
     void historySaved(bool ok);
     void historyRestored(const QVariantList &messages);
-
+    void tokensGenerated(int count); 
 
 
   private:
@@ -206,7 +206,7 @@ class LlamaEngine : public QObject {
     void saveHistoryRequested(const QString &path);
     void loadHistoryRequested(const QString &path);
     void historySaved(bool ok);   // re-emit подтверждения от worker'а
-  
+    void tokensGenerated(int count);
 
     // Внутренние: уводят работу в поток
     void clearHistoryRequested();

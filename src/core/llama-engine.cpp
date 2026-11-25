@@ -636,6 +636,7 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
       if (sec > 0.05)
         emit genSpeed(nGen / sec);
       emit contextFree(static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context));
+      emit tokensGenerated(nGen);
     }
 
     if (!decodeTokens(context, &tok, 1, nextPos)) {
@@ -662,19 +663,25 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
 
   history.emplace_back("assistant", full);
 
+    // Рассчитываем финальные метрики
   const double genSec = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - genStart).count();
   const double tps = genSec > 0 ? nGen / genSec : 0.0;
   const int32_t freeFinal = static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
-  emit contextFree(freeFinal); // метка сверху сойдётся со статистикой
+  
+  emit contextFree(freeFinal); // Обновляем UI в последний раз
+
+  // Формируем понятную строку для истории и UI
   char statLine[256];
   snprintf(statLine, sizeof(statLine),
-           "Промпт: %d ток. за %.1f с · Ответ: %d ток. за %.1f с (%.1f ток/с) · Свободно контекста: %d",
-           nPromptTokens, promptSec, nGen, genSec, tps, freeFinal);
+           "📊 Statistics: Generated %d tokens | Average speed: %.1f tokens/s | Context remaining: %d tokens.",
+           nGen, tps, freeFinal);
 
+  // Добавляем в историю диалога (это гарантирует сохранение при Save ctx)
   history.emplace_back("stats", statLine);
+  
+  // Отправляем в QML для немедленного отображения
   emit statsAppended(QString::fromUtf8(statLine));
-
   emit generationFinished(QString::fromStdString(full));
 }
 
@@ -835,6 +842,7 @@ LlamaEngine::LlamaEngine(QObject *parent) : QObject(parent) {
     connect(m_worker, &LlamaWorker::statsAppended,     this, &LlamaEngine::statsAppended);
     connect(m_worker, &LlamaWorker::historySaved,      this, &LlamaEngine::historySaved);
     connect(m_worker, &LlamaWorker::historyRestored,   this, &LlamaEngine::historyRestored);
+    connect(m_worker, &LlamaWorker::tokensGenerated,   this, &LlamaEngine::tokensGenerated);
 
 
     connect(m_worker, &LlamaWorker::modelLoaded, this,
