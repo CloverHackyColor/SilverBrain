@@ -1,5 +1,14 @@
 #include "llama-engine.h"
 
+#include <QDir>
+#include <QFileInfo>
+#include <QSettings>
+#include <optional>
+
+extern "C" {
+#include "gguf.h"
+#include "ggml.h"
+}
 
 namespace {
 
@@ -145,39 +154,49 @@ namespace {
 
 } // namespace
 
-
-#include <QDir>
-#include <QFileInfo>
-#include <QSettings>
-#include <optional>
-
-extern "C" {
-#include "gguf.h"
-#include "ggml.h"
-}
-
 namespace MmprojAutoDetect {
 
-    // Быстрое чтение uint32 из метаданных GGUF без аллокации весов
-    static std::optional<uint32_t> getGgufUInt32(const QString& path, const QString& key) {
+    // Универсальное чтение uint32/uint64 из метаданных GGUF
+    static std::optional<uint32_t> getGgufDim(const QString& path, const QStringList& keys) {
         struct gguf_init_params params = { /*.no_alloc = */ true, /*.ctx = */ nullptr };
         gguf_context* ctx = gguf_init_from_file(path.toStdString().c_str(), params);
         if (!ctx) return std::nullopt;
 
-        int key_idx = gguf_find_key(ctx, key.toStdString().c_str());
-        if (key_idx != -1 && gguf_get_kv_type(ctx, key_idx) == GGUF_TYPE_UINT32) {
-            uint32_t val = gguf_get_val_u32(ctx, key_idx);
-            gguf_free(ctx);
-            return val;
+        for (const QString& key : keys) {
+            int key_idx = gguf_find_key(ctx, key.toStdString().c_str());
+            if (key_idx != -1) {
+                enum gguf_type type = gguf_get_kv_type(ctx, key_idx);
+                if (type == GGUF_TYPE_UINT32) {
+                    uint32_t val = gguf_get_val_u32(ctx, key_idx);
+                    gguf_free(ctx);
+                    return val;
+                } else if (type == GGUF_TYPE_UINT64) {
+                    uint64_t val = gguf_get_val_u64(ctx, key_idx);
+                    gguf_free(ctx);
+                    return static_cast<uint32_t>(val);
+                }
+            }
         }
         gguf_free(ctx);
         return std::nullopt;
     }
 
-    // "Очищает" имя файла, удаляя "mmproj" и оставляя только буквы/цифры для сравнения
+    // "Очищает" имя файла от mmproj и суффиксов квантования
     static QString coreName(const QString& s) {
         QString lower = s.toLower();
         lower.replace(QStringLiteral("mmproj"), QStringLiteral(""));
+        
+        QStringList quantSuffixes = {
+            "bf16", "f16", "f32", "q4_0", "q4_1", "q5_0", "q5_1", 
+            "q8_0", "quasar", "iq2_xxs", "iq3_xs", "q2_k", "q3_k", 
+            "q4_k", "q5_k", "q6_k", "imatrix", "gguf"
+        };
+        for (const QString& suffix : quantSuffixes) {
+            lower.replace("-" + suffix, "");
+            lower.replace("_" + suffix, "");
+            lower.replace(suffix, "");
+        }
+        
         QString cleaned;
         for (const QChar& c : lower) {
             if (c.isLetterOrNumber()) cleaned.append(c);
@@ -185,35 +204,95 @@ namespace MmprojAutoDetect {
         return cleaned;
     }
 
-    // Главная функция поиска
-    static QString findDefault(const QString& modelPath) {
-        // 1. Проверяем ручной override в QSettings (если пользователь когда-то выбирал вручную)
+    struct Candidate {
+        QString path;
+        int priority; // чем меньше — тем лучше (0 = идеал)
+    };
+
+    // Возвращает список кандидатов, отсортированный по приоритету.
+    // priority 0: точное совпадение имени + совпадение размеров
+    // priority 1: нечёткое совпадение имени + совпадение размеров
+    // priority 2: точное совпадение имени, но размеры не удалось проверить
+    // priority 3: нечёткое совпадение имени, но размеры не удалось проверить
+    static QList<Candidate> findCandidates(const QString& modelPath) {
+        QList<Candidate> result;
+
+        // 1. Ручной override
         QSettings settings;
         settings.beginGroup(QStringLiteral("mmprojOverride"));
         QString override = settings.value(modelPath).toString();
         settings.endGroup();
-        if (!override.isEmpty()) return override;
+        if (!override.isEmpty()) {
+            qDebug() << "[SilverBrain] Using mmproj override from settings:" << override;
+            result.append({override, 0});
+            return result;
+        }
 
-        // 2. Ищем файл с похожим именем в той же папке
         QFileInfo fi(modelPath);
         QString modelName = coreName(fi.completeBaseName());
-        if (!modelName.isEmpty()) {
-            QDir dir = fi.dir();
-            QFileInfoList files = dir.entryInfoList({QStringLiteral("*.gguf")}, QDir::Files);
-            for (const QFileInfo& file : files) {
-                if (file.fileName().toLower().contains(QStringLiteral("mmproj"))) {
-                    if (coreName(file.completeBaseName()) == modelName) {
-                        // Проверяем совместимость размеров (embedding_length == projection_dim)
-                        auto embd = getGgufUInt32(modelPath, QStringLiteral("embedding_length"));
-                        auto proj = getGgufUInt32(file.absoluteFilePath(), QStringLiteral("projection_dim"));
-                        if (embd && proj && *embd == *proj) {
-                            return file.absoluteFilePath();
-                        }
-                    }
-                }
-            }
+        qDebug() << "[SilverBrain] Searching for mmproj. Model core name:" << modelName;
+        
+        if (modelName.isEmpty()) {
+            qDebug() << "[SilverBrain] Model core name is empty, skipping autodetect.";
+            return result;
         }
-        return QString(); // Не найдено
+
+        QDir dir = fi.dir();
+        QFileInfoList files = dir.entryInfoList({QStringLiteral("*.gguf")}, QDir::Files);
+        
+        // Размер эмбеддинга основной модели — читаем один раз
+        auto modelEmb = getGgufDim(modelPath, {"embedding_length", "llama.embedding_length", "n_embd"});
+        qDebug() << "[SilverBrain] Model embedding dimension:" << (modelEmb ? QString::number(*modelEmb) : "UNKNOWN");
+
+        for (const QFileInfo& file : files) {
+            if (!file.fileName().toLower().contains(QStringLiteral("mmproj")))
+                continue;
+
+            QString candidateCore = coreName(file.completeBaseName());
+            
+            // Игнорируем файлы с пустыми/слишком короткими именами
+            if (candidateCore.isEmpty() || candidateCore.length() < 4) {
+                qDebug() << "[SilverBrain] Skipping generic/short mmproj:" << file.fileName();
+                continue;
+            }
+
+            // Нечёткое сравнение имён
+            bool exactMatch = (candidateCore == modelName);
+            bool fuzzyMatch = modelName.contains(candidateCore) || candidateCore.contains(modelName);
+            
+            if (!exactMatch && !fuzzyMatch)
+                continue;
+
+            qDebug() << "[SilverBrain] Candidate:" << file.fileName() 
+                     << "(core:" << candidateCore << ", exact:" << exactMatch << ")";
+
+            // Проверяем размеры
+            auto projDim = getGgufDim(file.absoluteFilePath(), {"projection_dim", "llama.projection_dim", "n_embd"});
+            qDebug() << "[SilverBrain]   MMProj projection_dim:" << (projDim ? QString::number(*projDim) : "UNKNOWN");
+
+            int priority = 99; // по умолчанию — низкий приоритет
+            if (modelEmb && projDim) {
+                if (*modelEmb == *projDim) {
+                    // Размеры совпали — это хороший кандидат
+                    priority = exactMatch ? 0 : 1;
+                } else {
+                    qDebug() << "[SilverBrain]   HARD MISMATCH (" << *modelEmb << " != " << *projDim << "). Skipping.";
+                    continue; // mismatch — сразу отбрасываем, даже не пробуем
+                }
+            } else {
+                // Размеры не удалось прочитать — понижаем приоритет, но не отбрасываем
+                priority = exactMatch ? 2 : 3;
+            }
+
+            result.append({file.absoluteFilePath(), priority});
+        }
+
+        // Сортируем по приоритету (меньше = лучше)
+        std::sort(result.begin(), result.end(), [](const Candidate& a, const Candidate& b) {
+            return a.priority < b.priority;
+        });
+
+        return result;
     }
 }
 
@@ -287,36 +366,41 @@ void LlamaWorker::load(const QString &modelPath, QString mmprojPath, int nCtx) {
     return;
   }
 
-  // =========================================================
-  // НОВАЯ ЛОГИКА: АВТОМАТИЧЕСКИЙ ПОИСК MMPOJ, ЕСЛИ ПУСТО
-  // =========================================================
-  if (mmprojPath.isEmpty()) {
-      mmprojPath = MmprojAutoDetect::findDefault(modelPath);
-      if (!mmprojPath.isEmpty()) {
-          qDebug() << "[SilverBrain] Autodetect: found and attached mmproj:" << mmprojPath;
-      } else {
-          qDebug() << "[SilverBrain] Autodetect: appropriate mmproj not found. Loading in text mode.";
-      }
-  }
+    // =========================================================
+    // АВТОМАТИЧЕСКИЙ ПОИСК MMPOJ С ПЕРЕБОРОМ КАНДИДАТОВ
+    // =========================================================
+    if (mmprojPath.isEmpty()) {
+        auto candidates = MmprojAutoDetect::findCandidates(modelPath);
+        qDebug() << "[SilverBrain] Found" << candidates.size() << "mmproj candidate(s).";
+        
+        for (const auto& cand : candidates) {
+            qDebug() << "[SilverBrain] Trying candidate (priority" << cand.priority << "):" << cand.path;
+            
+            mtmd_context_params mparams = mtmd_context_params_default();
+            mparams.use_gpu = true;
+            mparams.media_marker = mtmd_default_marker();
+            
+            mtmd_context* trial = mtmd_init_from_file(cand.path.toStdString().c_str(), model, mparams);
+            if (trial) {
+                mctx = trial;
+                mmprojPath = cand.path;
+                qDebug() << "[SilverBrain] Successfully loaded mmproj:" << mmprojPath;
+                break; // первый успешный — выходим из цикла
+            } else {
+                qDebug() << "[SilverBrain] Failed to load" << cand.path << "(mismatch or error). Trying next...";
+            }
+        }
+        
+        if (mctx == nullptr) {
+            qDebug() << "[SilverBrain] All candidates failed. Loading in text mode.";
+        }
+    }
   // =========================================================
 
     // Сохраняем текущие пути в переменные класса (если они у вас есть)
   currentModelPath = modelPath;
   currentMmprojPath = mmprojPath; 
 
-  if (!mmprojPath.isEmpty()) {
-    mtmd_context_params mparams = mtmd_context_params_default();
-    mparams.use_gpu = true; // проектор — на GPU вместе с моделью
-    mparams.media_marker = mtmd_default_marker();  // ← фиксируем маркер контекста
-    mctx = mtmd_init_from_file(mmprojPath.toStdString().c_str(), model, mparams);
-    if (!mctx) {
-      llama_model_free(model);
-      model = nullptr;
-      vocab = nullptr;
-      emit modelLoaded(false, QStringLiteral("Failed to load mmproj"));
-      return;
-    }
-  }
   emit modelLoaded(true, {});
 }
 

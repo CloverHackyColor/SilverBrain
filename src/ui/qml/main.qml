@@ -11,6 +11,21 @@ ApplicationWindow {
     color: "#f6f5f2"
     property string selectedModelPath: ""
 
+    // Универсальная функция для получения локального пути из QML FileDialog
+    // Работает в Qt 5.15, Qt 6, Windows, macOS, Linux
+    function getLocalPath(fileProperty) {
+        var str = fileProperty.toString(); // Безопасно для и url, и для string
+        if (str.startsWith("file://")) {
+            // Убираем "file://" и декодируем спецсимволы (например, %20 -> пробел)
+            str = decodeURIComponent(str.substring(7));
+            // Фикс для Windows: превращаем "/C:/path" в "C:/path"
+            if (str.length > 2 && str[0] === "/" && str[2] === ":") {
+                str = str.substring(1);
+            }
+        }
+        return str;
+    }
+
     RowLayout {
         anchors.fill: parent
         anchors.margins: 10
@@ -78,7 +93,8 @@ ApplicationWindow {
                 //currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
                 folder: Qt.resolvedUrl(StandardPaths.writableLocation(StandardPaths.DocumentsLocation))
                 onAccepted: {
-                    var path = selectedFile.toLocalFile()
+                    var fileProp = (typeof selectedFile !== 'undefined') ? selectedFile : file;
+                    var path = getLocalPath(fileProp);
                     silverBrain.saveHistoryAs(path)
                     console.log("Saving history to:", path)
                 }
@@ -91,7 +107,8 @@ ApplicationWindow {
                 //currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
                 folder: Qt.resolvedUrl(StandardPaths.writableLocation(StandardPaths.DocumentsLocation))
                 onAccepted: {
-                    var path = selectedFile.toLocalFile()
+                    var fileProp = (typeof selectedFile !== 'undefined') ? selectedFile : file;
+                    var path = getLocalPath(fileProp);
                     silverBrain.loadHistoryFrom(path)
                     console.log("Load history from:", path)
                 }
@@ -176,12 +193,21 @@ ApplicationWindow {
                         //selectedNameFilterExtensions: ["*.gguf"]
                         onAccepted: {
                             // currentFile — локальный URL выбранного файла
-                            var path = QUrl(selectedFile).toLocalFile()
-                        //    if (path.startsWith("file://"))
-                        //        path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
+/*                            var path = file.toString()
+                            if (path.startsWith("file://")) // срезаем "file://" (на маке один слэш)
+                                path = decodeURIComponent(path.substring(7))                       
                             selectedModelPath = path
                             modelPathField.text = path.substring(
                                 Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1)
+ */
+                            // Используем selectedFile (Qt6) или file (Qt5.15) через нашу функцию
+                            var fileProp = (typeof selectedFile !== 'undefined') ? selectedFile : file;
+                            var path = getLocalPath(fileProp);
+                            
+                            selectedModelPath = path;
+                            // Берем только имя файла для отображения в поле
+                            var fileName = path.substring(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\") + 1));
+                            modelPathField.text = fileName;   
                             console.log("Model loading: ", selectedModelPath)
                             silverBrain.loadModel(path)  // mmproj будет по-умолчанию ""
                         }                                    
@@ -203,7 +229,7 @@ ApplicationWindow {
                         title: "Choose mmproj"
                         nameFilters: ["GGUF projector (*.gguf)"]
                         onAccepted: {
-                            var path = selectedFile.toString()
+                            var path = file.toString()
                             if (path.startsWith("file://"))
                                 path = decodeURIComponent(path.substring(7))
                             silverBrain.mmprojPath = path
@@ -303,11 +329,14 @@ ApplicationWindow {
                             id: statsRow
                             Rectangle {
                                 width: parent.width
-                                height: childrenRect.height + 16
+                                height: statsLabel.implicitHeight + 16
                                 color: "transparent" // Или "#f3f4f6" для легкой подложки
                                 
                                 Label {
-                                    anchors.centerIn: parent
+                                    id: statsLabel
+                                    anchors.top: parent.top
+                                    anchors.topMargin: 8
+                                    anchors.horizontalCenter: parent.horizontalCenter
                                     width: parent.width - 32
                                     horizontalAlignment: Text.AlignHCenter
                                     font.pixelSize: 11
@@ -357,10 +386,10 @@ ApplicationWindow {
                         title: "Attach image"
                         nameFilters: ["Images (*.png *.jpg *.jpeg *.webp)"]
                         onAccepted: {
-                            var path = selectedFile.toString()
-                            if (path.startsWith("file://"))
-                                path = decodeURIComponent(path.substring(7))
+                            var fileProp = (typeof selectedFile !== 'undefined') ? selectedFile : file;
+                            var path = getLocalPath(fileProp);
                             silverBrain.imagePath = path
+                            console.log("Load image from:", path)
                         } 
                     }
                     Button {
