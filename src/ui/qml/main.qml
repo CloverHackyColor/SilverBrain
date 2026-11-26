@@ -78,9 +78,9 @@ ApplicationWindow {
                 //currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
                 folder: Qt.resolvedUrl(StandardPaths.writableLocation(StandardPaths.DocumentsLocation))
                 onAccepted: {
-                    var path = selectedFile.toLocalFile()
-                    silverBrain.saveHistoryAs(path)
-                    console.log("Saving history to:", path)
+                    //var path = currentFile.toLocalFile()
+                    silverBrain.saveHistoryAs(currentFile)
+                    console.log("Saving history to:", currentFile)
                 }
             }
             FileDialog {
@@ -91,9 +91,9 @@ ApplicationWindow {
                 //currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
                 folder: Qt.resolvedUrl(StandardPaths.writableLocation(StandardPaths.DocumentsLocation))
                 onAccepted: {
-                    var path = selectedFile.toLocalFile()
-                    silverBrain.loadHistoryFrom(path)
-                    console.log("Load history from:", path)
+                    //var path = currentFile.toLocalFile()
+                    silverBrain.loadHistoryFrom(currentFile)
+                    console.log("Load history from:", currentFile)
                 }
             }
 
@@ -101,7 +101,8 @@ ApplicationWindow {
                 id: projectFolderDialog
                 title: "Choose project folder to index"
                 onAccepted: {
-                    silverBrain.projectPath = selectedFolder.toLocalFile()
+                    //silverBrain.projectPath = selectedFolder.toLocalFile()
+                    silverBrain.projectPath = localPath(folder)
                     silverBrain.buildIndex()
                 }
             }
@@ -211,9 +212,10 @@ ApplicationWindow {
                         //selectedNameFilterExtensions: ["*.gguf"]
                         onAccepted: {
                             // currentFile — локальный URL выбранного файла
-                            var path = QUrl(selectedFile).toLocalFile()
+                            //var path = currentFile.toLocalFile()
                         //    if (path.startsWith("file://"))
                         //        path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
+                            var path = localPath(currentFile)
                             selectedModelPath = path
                             modelPathField.text = path.substring(
                                 Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1)
@@ -238,9 +240,10 @@ ApplicationWindow {
                         title: "Choose mmproj"
                         nameFilters: ["GGUF projector (*.gguf)"]
                         onAccepted: {
-                            var path = selectedFile.toString()
-                            if (path.startsWith("file://"))
-                                path = decodeURIComponent(path.substring(7))
+                            //var path = currentFile.toString()
+                            //if (path.startsWith("file://"))
+                            //    path = decodeURIComponent(path.substring(7))
+                            var path = localPath(currentFile)
                             silverBrain.mmprojPath = path
                         }
                     }
@@ -450,6 +453,15 @@ ApplicationWindow {
 
         inputField.text = ""
         silverBrain.generateAsync(message)
+    }
+
+    function localPath(url) {
+        var path = decodeURIComponent(url.toString().replace(/^file:\/\//, ""))
+        if (Qt.platform.os === "windows" &&
+                path.length >= 3 && path[0] === "/" && path[2] === ":") {
+            path = path.substring(1)
+        }
+        return path
     }
 
     Connections {
