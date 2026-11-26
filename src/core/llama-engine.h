@@ -83,6 +83,7 @@ public:
     std::string channelHold;
     QString currentModelPath;
     QString currentMmprojPath;
+    QString currentMtpPath;
 
     // Память диалога: пары (роль, текст). Именно это позволяет модели
     // «помнить» предыдущие ходы, а не начинать каждый ответ с нуля.

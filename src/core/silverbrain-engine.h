@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QThread>
 #include "llama-engine.h"
 #include "embedding-engine.h"
 #include "code-index.h"
@@ -36,6 +37,7 @@ class SilverBrainEngine : public QObject {
     
 public:
     explicit SilverBrainEngine(LlamaEngine* llm, EmbeddingEngine* emb, QObject* parent = nullptr);
+    ~SilverBrainEngine() override;
     
     // Проксирование методов LlamaEngine
     Q_INVOKABLE void loadModel(const QString& modelPath);
@@ -44,6 +46,7 @@ public:
     Q_INVOKABLE void stopGeneration() { m_llm->stopGeneration(); }
     Q_INVOKABLE void saveHistoryAs(const QUrl &url) { m_llm->saveHistoryAs(url); }
     Q_INVOKABLE void loadHistoryFrom(const QUrl &url) { m_llm->loadHistoryFrom(url); }
+    Q_INVOKABLE void ask(const QString& prompt);
     
     // Управление индексом
     Q_INVOKABLE void buildIndex();
@@ -61,7 +64,7 @@ public:
     
     // Проксирование сигналов LlamaEngine
     bool busy() const { return m_llm->busy(); }
-    bool loading() const { return m_llm->loading(); }
+    bool loading() const { return m_llm->loading() || m_embeddingLoading; }
     qreal loadProgress() const { return m_llm->loadProgress(); }
     int contextSize() const { return m_llm->contextSize(); }
     qreal temperature() const { return m_llm->temperature(); }
@@ -106,9 +109,11 @@ public:
     void isIndexingChanged();
     void indexProgressChanged();
     void indexingStatusChanged();
+    void indexBuildRequested(const QString& projectPath, const QString& indexPath);
     
 private slots:
     void onLlmModelLoaded(bool ok, const QString& error);
+    void onEmbeddingModelLoaded(bool ok, const QString& error);
     void onModelUnloaded();
     void onRetrievalFinished(const QStringList& relevantChunks);
     void onRetrievalError(const QString& error);
@@ -120,11 +125,13 @@ private:
     EmbeddingEngine* m_emb;
     CodeIndex m_index;
     CodeIndexer* m_indexer;
+    QThread m_indexerThread;
     CodeRetriever* m_retriever;
     
     QString m_projectPath;
     QString m_pendingPrompt;
     QString m_pendingEmbeddingPath;
+    bool m_embeddingLoading = false;
     bool m_isIndexing = false;
     float m_indexProgress = 0.0f;
     QString m_indexingStatus;
@@ -133,3 +140,65 @@ private:
     QString buildEnrichedPrompt(const QString& userQuery, const QStringList& chunks);
     
 };
+/*
+┌──────────────────────────────────────────────────────────────┐
+│                      SilverBrain App                         │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────────┐    ┌──────────────────────────────┐     │
+│  │ EmbeddingEngine │    │        LlamaEngine           │     │
+│  │(отдельный поток)│    │ (уже есть, без изменений)    │     │
+│  │                 │    │                              │     │
+│  │ - модель emb    │    │ - модель LLM                 │     │
+│  │ - encode(text)  │    │ - generateAsync(prompt)      │     │
+│  │ - вектор 768f   │    │ - history                    │     │
+│  └────────┬────────┘    └──────────────┬───────────────┘     │
+│           │                            │                     │
+│           └────────────┬───────────────┘                     │
+│                        ↓                                     │
+│           ┌────────────────────────┐                         │
+│           │    CodeRetriever       │                         │
+│           │                        │                         │
+│           │ - search(query, hist)  │                         │
+│           │ - использует Embedding │                         │
+│           │ - использует CodeIndex │                         │
+│           │ - LLM-rerank (опц.)    │                         │
+│           └────────────┬───────────┘                         │
+│                        ↓                                     │
+│           ┌────────────────────────┐                         │
+│           │     CodeIndex          │                         │
+│           │                        │                         │
+│           │ - chunks[]             │                         │
+│           │ - hnsw_index           │                         │
+│           │ - bm25_index           │                         │
+│           │ - repo_map             │                         │
+│           │ - save/load (ofstream) │                         │
+│           └────────────┬───────────┘                         │
+│                        ↓                                     │
+│           ┌────────────────────────┐                         │
+│           │    CodeIndexer         │                         │
+│           │ (отдельный QThread)    │                         │
+│           │                        │                         │
+│           │ - tree-sitter парсинг  │                         │
+│           │ - buildIndex(path)     │                         │
+│           │ - progress сигналы     │                         │
+│           └────────────────────────┘                         │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+*/
+/*
+Запрос пользователя
+    ↓
+[1] Embedding-модель → вектор запроса (100-300 мс)
+    ↓
+[2] HNSW-поиск → top-30 чанков по косинусу
+    + BM25 → top-30 чанков по ключевым словам
+    → RRF-fusion → top-20 уникальных чанков
+    ↓
+[3] LLM-reranker (та же LLM, но в режиме "оцени релевантность 0-10")
+    → top-5 чанков
+    ↓
+[4] LLM читает top-5 + их контекст (вызовы, соседи)
+    ↓
+[5] LLM генерирует ответ
+*/

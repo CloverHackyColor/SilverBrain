@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <sstream>
+#include <stdexcept>
 #include "hnswlib.h"
 
 // ============================ BM25 =========================================
@@ -33,14 +34,15 @@ void CodeIndex::Bm25Index::build(const std::vector<CodeChunk>& chunks) {
         std::string token;
         while (iss >> token) {
             // Приводим к нижнему регистру
-            std::transform(token.begin(), token.end(), token.begin(), ::tolower);
-            // Убираем не-алфавитные символы
-            token.erase(std::remove_if(token.begin(), token.end(), 
-                                       [](char c) { return !std::isalnum(c); }), 
-                        token.end());
-            if (!token.empty()) {
-                term_freq[token]++;
-            }
+          std::transform(token.begin(), token.end(), token.begin(),
+            [](unsigned char c) {
+              return static_cast<char>(std::tolower(c));
+            });
+
+          token.erase(std::remove_if(token.begin(), token.end(),
+            [](unsigned char c) {
+              return !std::isalnum(c);
+            }), token.end());
         }
         
         float dl = chunk.body.size();
@@ -49,7 +51,13 @@ void CodeIndex::Bm25Index::build(const std::vector<CodeChunk>& chunks) {
         for (const auto& [term, tf] : term_freq) {
             doc_freq[term]++;
             float idf = std::log((total_docs - doc_freq[term] + 0.5f) / (doc_freq[term] + 0.5f) + 1.0f);
-            float tf_norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avg_dl));
+            float tf_norm = 0;
+            if (avg_dl == 0) {
+              tf_norm = (tf * (k1 + 1)) / (tf + k1);
+            }
+            else {
+              tf_norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avg_dl));
+            }
             postings[term].push_back({i, idf * tf_norm});
         }
     }
@@ -64,10 +72,15 @@ std::vector<std::pair<uint32_t, float>> CodeIndex::Bm25Index::search(
     std::istringstream iss(query);
     std::string token;
     while (iss >> token) {
-        std::transform(token.begin(), token.end(), token.begin(), ::tolower);
-        token.erase(std::remove_if(token.begin(), token.end(), 
-                                   [](char c) { return !std::isalnum(c); }), 
-                    token.end());
+      std::transform(token.begin(), token.end(), token.begin(),
+        [](unsigned char c) {
+          return static_cast<char>(std::tolower(c));
+        });
+
+      token.erase(std::remove_if(token.begin(), token.end(),
+        [](unsigned char c) {
+          return !std::isalnum(c);
+        }), token.end());
         
         if (token.empty()) continue;
         
@@ -91,6 +104,14 @@ std::vector<std::pair<uint32_t, float>> CodeIndex::Bm25Index::search(
 }
 
 // ============================ CodeIndex ====================================
+void CodeIndex::clear() {
+    m_hnsw.reset();
+    m_space.reset();
+    m_hnsw_dims = 0;
+    m_chunks.clear();
+    m_bm25 = Bm25Index{};
+}
+
 void CodeIndex::addChunk(CodeChunk chunk) {
     chunk.id = m_chunks.size();
     m_chunks.push_back(std::move(chunk));
@@ -101,14 +122,19 @@ void CodeIndex::buildBm25() {
 }
 
 void CodeIndex::buildHnsw(int dims) {
+    if (dims <= 0 || m_chunks.empty()) {
+        throw std::invalid_argument("Cannot build HNSW without embeddings");
+    }
+
     m_hnsw_dims = dims;
     
     // 1. Создаем пространство (L2 для нормализованных векторов = Cosine)
-    hnswlib::L2Space space(dims);
+    m_hnsw.reset();
+    m_space = std::make_unique<hnswlib::L2Space>(dims);
     
     // 2. Создаем индекс: space, max_elements, M, ef_construction
     m_hnsw = std::make_unique<hnswlib::HierarchicalNSW<float>>(
-        &space, 
+        m_space.get(),
         m_chunks.size(), 
         16,   // M (количество связей)
         200   // ef_construction (качество построения)
@@ -146,6 +172,9 @@ std::vector<CodeIndex::SearchResult> CodeIndex::searchHnsw(
 {
     if (!m_hnsw || query_vec.empty()) {
         return {};
+    }
+    if (query_vec.size() != static_cast<size_t>(m_hnsw_dims)) {
+        throw std::runtime_error("Embedding dimensions do not match the project index; rebuild the index.");
     }
     
     // searchKnn возвращает priority_queue, где top() - это наименьшее расстояние (лучшее совпадение)
@@ -245,6 +274,8 @@ bool CodeIndex::save(const QString& path) const {
 }
 
 bool CodeIndex::load(const QString& path) {
+    clear();
+
     std::ifstream in(path.toStdString(), std::ios::binary);
     if (!in) return false;
     
@@ -287,9 +318,9 @@ bool CodeIndex::load(const QString& path) {
         // Размерность берем из первого чанка
         m_hnsw_dims = m_chunks[0].embedding.size();
         
-        hnswlib::L2Space space(m_hnsw_dims);
+        m_space = std::make_unique<hnswlib::L2Space>(m_hnsw_dims);
         // Конструктор с путем к файлу автоматически загружает индекс!
-        m_hnsw = std::make_unique<hnswlib::HierarchicalNSW<float>>(&space, hnswPath.toStdString());
+        m_hnsw = std::make_unique<hnswlib::HierarchicalNSW<float>>(m_space.get(), hnswPath.toStdString());
     }
     
     // 6. Перестраиваем BM25 (это быстро, ~50-100 мс для 20к чанков)

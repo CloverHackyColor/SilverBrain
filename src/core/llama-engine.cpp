@@ -296,6 +296,179 @@ namespace MmprojAutoDetect {
     }
 }
 
+namespace MtpAutoDetect {
+
+// Быстрое чтение uint32 из метаданных GGUF без аллокации весов
+static std::optional<uint32_t> getGgufUInt32(const QString& path, const QString& key) {
+    struct gguf_init_params params = { /*.no_alloc = */ true, /*.ctx = */ nullptr };
+    gguf_context* ctx = gguf_init_from_file(path.toStdString().c_str(), params);
+    if (!ctx) return std::nullopt;
+    int key_idx = gguf_find_key(ctx, key.toStdString().c_str());
+    if (key_idx != -1 && gguf_get_kv_type(ctx, key_idx) == GGUF_TYPE_UINT32) {
+        uint32_t val = gguf_get_val_u32(ctx, key_idx);
+        gguf_free(ctx);
+        return val;
+    }
+    gguf_free(ctx);
+    return std::nullopt;
+}
+
+// Быстрое чтение string из метаданных GGUF
+static std::optional<std::string> getGgufString(const QString& path, const QString& key) {
+    struct gguf_init_params params = { /*.no_alloc = */ true, /*.ctx = */ nullptr };
+    gguf_context* ctx = gguf_init_from_file(path.toStdString().c_str(), params);
+    if (!ctx) return std::nullopt;
+    int key_idx = gguf_find_key(ctx, key.toStdString().c_str());
+    if (key_idx != -1 && gguf_get_kv_type(ctx, key_idx) == GGUF_TYPE_STRING) {
+        const char* val = gguf_get_val_str(ctx, key_idx);
+        std::string result = val ? val : "";
+        gguf_free(ctx);
+        return result;
+    }
+    gguf_free(ctx);
+    return std::nullopt;
+}
+
+// Проверка наличия встроенного MTP в модели
+static bool modelHasMTP(const QString& path) {
+    auto layers = getGgufUInt32(path, QStringLiteral("nextn_predict_layers"));
+    return layers && *layers > 0;
+}
+
+// "Очищает" имя файла, удаляя маркеры MTP и квантования, оставляя базовое имя (аналог mtpStem)
+static QString mtpStem(const QString& fileName) {
+    QString s = fileName.toLower();
+    if (s.endsWith(".gguf")) s.chop(5);
+    s.replace(".mtp.", "-mtp-");
+    if (s.endsWith(".mtp")) {
+        s = s.left(s.length() - 4) + "-mtp";
+    }
+
+    QStringList parts = s.split("-");
+    auto isMarker = [](const QString& t) {
+        static const QSet<QString> markers = {"ud", "mtp", "nextn", "shared", "draft", "of", "f16", "f32", "bf16", "mxfp4", "xl", "xs", "s", "m", "l", "k"};
+        if (markers.contains(t)) return true;
+        static const QRegularExpression re(R"(^((i?q\d+(_[a-z0-9]+)*)|(\d{5}))$)");
+        return re.match(t).hasMatch();
+    };
+
+    while (!parts.isEmpty() && isMarker(parts.first())) parts.removeFirst();
+    while (!parts.isEmpty() && isMarker(parts.last())) parts.removeLast();
+
+    return parts.join("-");
+}
+
+// Проверка совместимости MTP head и base model (аналог mtpHeadMatches)
+static bool mtpHeadMatches(const QString& headPath, const QString& modelPath) {
+    auto headArch = getGgufString(headPath, QStringLiteral("general.architecture"));
+    auto baseArch = getGgufString(modelPath, QStringLiteral("general.architecture"));
+    
+    if (headArch && baseArch) {
+        if (*headArch != *baseArch && *headArch != *baseArch + "_assistant") {
+            return false;
+        }
+    }
+
+    auto headEmbd = getGgufUInt32(headPath, QStringLiteral("embedding_length"));
+    auto baseEmbd = getGgufUInt32(modelPath, QStringLiteral("embedding_length"));
+    if (headEmbd && baseEmbd && *headEmbd != *baseEmbd) {
+        return false;
+    }
+
+    auto headVocab = getGgufUInt32(headPath, QStringLiteral("vocab_size"));
+    auto baseVocab = getGgufUInt32(modelPath, QStringLiteral("vocab_size"));
+    if (headVocab && baseVocab && *headVocab != *baseVocab) {
+        return false;
+    }
+
+    QFileInfo headInfo(headPath);
+    QFileInfo baseInfo(modelPath);
+    if (headInfo.exists() && baseInfo.exists()) {
+        auto layers = getGgufUInt32(headPath, QStringLiteral("nextn_predict_layers"));
+        if (layers && *layers > 0) {
+            // Если это отдельный head, он должен занимать меньше половины размера базовой модели
+            if (headInfo.size() > baseInfo.size() / 2) {
+                return false;
+            }
+        }
+    }
+
+    auto layers = getGgufUInt32(headPath, QStringLiteral("nextn_predict_layers"));
+    if (layers) {
+        return *layers >= 1;
+    }
+
+    return true;
+}
+
+// Поиск пути к MTP draft модели (аналог mtpDraftPath)
+static QString findDraft(const QString& modelPath) {
+    if (modelPath.isEmpty()) return QString();
+    if (modelHasMTP(modelPath)) {
+        // Если модель уже имеет встроенный MTP (nextn слои), отдельный head не нужен
+        return QString(); 
+    }
+
+    QFileInfo fi(modelPath);
+    QDir dir = fi.dir();
+    QString modelStem = mtpStem(fi.fileName());
+
+    QStringList files;
+    // 1. Файлы в той же директории
+    for (const QFileInfo& file : dir.entryInfoList({QStringLiteral("*.gguf")}, QDir::Files)) {
+        files.append(file.absoluteFilePath());
+    }
+
+    // 2. Файлы в поддиректориях MTP или mtp
+    for (const QString& sub : {QStringLiteral("MTP"), QStringLiteral("mtp")}) {
+        QDir subDir(dir);
+        if (subDir.cd(sub)) {
+            for (const QFileInfo& file : subDir.entryInfoList({QStringLiteral("*.gguf")}, QDir::Files)) {
+                files.append(file.absoluteFilePath());
+            }
+        }
+    }
+
+    QStringList candidates;
+    for (const QString& filePath : files) {
+        if (filePath == modelPath) continue;
+        QFileInfo fiFile(filePath);
+        QString name = fiFile.fileName().toLower();
+        
+        bool looksLikeHead = name.startsWith("mtp-") || name.contains(".mtp.") || 
+                             name.contains("-mtp-") || name.endsWith("-mtp.gguf") || name.contains("nextn");
+        if (!looksLikeHead) continue;
+
+        QString stem = mtpStem(fiFile.fileName());
+        if (stem != modelStem && !modelStem.startsWith(stem) && !stem.startsWith(modelStem)) {
+            continue;
+        }
+
+        if (mtpHeadMatches(filePath, modelPath)) {
+            candidates.append(filePath);
+        }
+    }
+
+    // Фильтруем точные совпадения
+    QStringList exact;
+    for (const QString& c : candidates) {
+        if (mtpStem(QFileInfo(c).fileName()) == modelStem) {
+            exact.append(c);
+        }
+    }
+
+    QStringList pool = exact.isEmpty() ? candidates : exact;
+
+    if (pool.count() > 1) {
+        qWarning() << "[SilverBrain] MTP: multiple heads match" << fi.fileName() << ", none selected to avoid ambiguity";
+        return QString();
+    }
+
+    return pool.isEmpty() ? QString() : pool.first();
+}
+
+} // namespace MtpAutoDetect
+
 // ============================ LlamaWorker ==================================
 
 LlamaWorker::~LlamaWorker() {
@@ -366,6 +539,7 @@ void LlamaWorker::load(const QString &modelPath, QString mmprojPath, int nCtx) {
     return;
   }
 
+
     // =========================================================
     // АВТОМАТИЧЕСКИЙ ПОИСК MMPOJ С ПЕРЕБОРОМ КАНДИДАТОВ
     // =========================================================
@@ -395,11 +569,43 @@ void LlamaWorker::load(const QString &modelPath, QString mmprojPath, int nCtx) {
             qDebug() << "[SilverBrain] All candidates failed. Loading in text mode.";
         }
     }
-  // =========================================================
+
+    // =========================================================
+    // НОВАЯ ЛОГИКА: АВТОМАТИЧЕСКИЙ ПОИСК MTP DRAFT, ЕСЛИ ПУСТО
+    // =========================================================
+    QString mtpPath; 
+    if (mtpPath.isEmpty()) {
+        mtpPath = MtpAutoDetect::findDraft(modelPath);
+        if (!mtpPath.isEmpty()) {
+            qDebug() << "[SilverBrain] Autodetect: found and attached MTP draft:" << mtpPath;
+        } else {
+            qDebug() << "[SilverBrain] Autodetect: appropriate MTP draft not found. Running in standard mode.";
+        }
+    }
+    if (!mtpPath.isEmpty()) {
+        qDebug() << "[SilverBrain] MTP draft path:" << mtpPath;
+        // ctxParams.speculative.model = mtpPath.toStdString().c_str(); 
+        // ctxParams.speculative.type = "draft-mtp"; 
+        // ctxParams.speculative.draft_sampling = true; 
+    }
+
 
     // Сохраняем текущие пути в переменные класса (если они у вас есть)
   currentModelPath = modelPath;
   currentMmprojPath = mmprojPath; 
+  currentMtpPath = mtpPath;
+    // =========================================================
+    // ВАЖНО: Включение MTP в работу llama.cpp
+    // =========================================================
+    // В зависимости от версии вашего форка llama.cpp (ветка silver), 
+    // инициализация speculative decoding может требовать передачи mtpPath 
+    // в параметры контекста или использования API llama_speculative.
+    // 
+    // Пример (адаптируйте под ваш API fork'а):
+    // if (!mtpPath.isEmpty()) {
+    //     ctxParams.speculative.model = mtpPath.toStdString().c_str();
+    //     // или использование llama_speculative_load / настройки сэмплера
+    // }
 
   emit modelLoaded(true, {});
 }
@@ -929,6 +1135,7 @@ void LlamaWorker::unload() {
     // 4. Сбрасываем внутренние переменные состояния
     currentModelPath = "";
     currentMmprojPath = ""; // <-- СБРОС ПУТИ ПРОЕКТОРА
+    currentMtpPath = "";
     
     emit modelUnloaded(); // Сигнал в QML, что можно обновить UI (например, скрыть кнопку "Загрузить изображение")
 }
