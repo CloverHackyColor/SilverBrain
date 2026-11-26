@@ -27,7 +27,10 @@
 #include "llama.h"  // достаточно одного include: таргет llama сам экспортирует
                     // нужные include-директории через target_include_directories
 #include "mtmd.h"  
-#include "mtmd-helper.h"                    
+#include "mtmd-helper.h"    
+#include "common.h"
+#include "speculative.h"
+#include "sampling.h"                
 
 // ---------------------------------------------------------------------------
 // Worker — живёт в отдельном QThread и держит ВСЁ состояние llama.cpp.
@@ -77,7 +80,7 @@ public:
 
     llama_model       *model   = nullptr;
     llama_context     *context = nullptr;
-    llama_sampler     *sampler = nullptr;
+    common_sampler   *sampler = nullptr;
     const llama_vocab *vocab   = nullptr;
     mtmd_context *mctx = nullptr;
     std::string channelHold;
@@ -92,6 +95,10 @@ public:
     // Лимит генерации за один ход и запас под ответ в контексте.
     static constexpr int kMaxNewTokens = 1024;
     static constexpr int kCtxReserve   = 8;
+
+    // Спекулятивная декодировка: хранит состояние между вызовами generateAsync()
+    struct common_speculative * spec = nullptr;
+    common_speculative_init_result_ptr spec_init;
 };
 
 // ---------------------------------------------------------------------------
@@ -237,4 +244,5 @@ class LlamaEngine : public QObject {
     qreal m_frequencyPenalty = 0.0;
     QString m_mmprojPath;
     QString m_imagePath;
+
 };

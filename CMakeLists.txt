@@ -22,6 +22,7 @@ message(STATUS "Using Qt ${QT_VERSION_MAJOR}: ${Qt${QT_VERSION_MAJOR}_DIR}")
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_TESTS_INSTALL  OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_COMMON  ON  CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_APP      OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_UI       OFF CACHE BOOL "" FORCE)
@@ -326,6 +327,7 @@ target_link_libraries(SilverBrain
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::QuickControls2 
     llama
+    llama-common
     mtmd 
     tree-sitter 
 )
