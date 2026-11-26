@@ -408,49 +408,72 @@ std::string LlamaWorker::buildPrompt() const {
     std::vector<llama_chat_message> msgs;
     msgs.reserve(history.size());
     for (const auto &[role, content] : history) {
-      if (role == "stats")
-        continue; // статистику в контекст модели не отдаём
-      msgs.push_back({role.c_str(), content.c_str()});
+        if (role == "stats")
+            continue; // статистику в контекст модели не отдаём
+        msgs.push_back({role.c_str(), content.c_str()});
     }
 
-    // 1) пробуем метаданные GGUF
     std::vector<char> buf(1 << 16);
-    const char *tmpl = kGemmaTemplate;
-    if (llama_model_meta_val_str(model, "tokenizer.chat_template",
-                                buf.data(), buf.size()) > 0)
-      tmpl = buf.data();
+    const char *tmpl = nullptr;
+    
+    // 1. Определяем имя модели из метаданных
+    std::string modelName;
+    modelName.resize(256);
+    int len = llama_model_meta_val_str(model, "general.name", modelName.data(), modelName.size());
+    if (len > 0) {
+        modelName.resize(len);
+    } else {
+        modelName = "unknown";
+    }
+    
+    // Приводим к нижнему регистру для надежного поиска
+    std::string lowerName = modelName;
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
 
-    // 2) шаблон GGUF не применился — ChatML (Qwen и прочие)
-    int32_t n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(),
-                                          /*add_ass=*/true, nullptr, 0);
-    if (n < 0 && tmpl != kGemmaTemplate) {
-      tmpl = kChatMLTemplate;
-      n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true,
-                                    nullptr, 0);
+    // 2. Логика выбора шаблона
+    bool isQwenFamily = (lowerName.find("qwen") != std::string::npos || 
+                         lowerName.find("qwythos") != std::string::npos);
+
+    if (isQwenFamily) {
+        // Для Qwen/Qwythos принудительно используем проверенный ChatML.
+        // Это обходит проблему сломанных/нестандартных шаблонов в кастомных GGUF.
+        tmpl = kChatMLTemplate;
+    } else {
+        // Для остальных (например, Gemma) пробуем шаблон из метаданных GGUF
+        if (llama_model_meta_val_str(model, "tokenizer.chat_template", buf.data(), buf.size()) > 0) {
+            tmpl = buf.data();
+        } else {
+            tmpl = kChatMLTemplate; // Фолбэк по умолчанию
+        }
     }
 
-    // 3) последняя попытка — Gemma
-    if (n < 0 && tmpl != kGemmaTemplate) {
-      tmpl = kGemmaTemplate;
-      n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true,
-                                    nullptr, 0);
+    // 3. Пробуем применить выбранный шаблон
+    int32_t n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, nullptr, 0);
+    
+    // 4. Если даже выбранный шаблон не сработал (крайне редкий случай), пробуем Gemma как последний шанс
+    if (n < 0) {
+        tmpl = kGemmaTemplate;
+        n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, nullptr, 0);
     }
 
-    if (n < 0) return {};
+    if (n < 0) {
+        fprintf(stderr, "[buildPrompt] FATAL: All chat templates failed!\n");
+        return {};
+    }
+
+    // 5. Формируем итоговую строку
     std::string out(static_cast<size_t>(n), '\0');
-    llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true,
-                              out.data(), n);
+    llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, out.data(), n);
 
-    // Диагностика: какой шаблон реально применён и чем заканчивается промпт.
-    // У Qwen хвост должен кончаться '<|im_start|>assistant' — если там
-    // '<start_of_turn>model', значит применён чужой шаблон.
-    fprintf(stderr, "[buildPrompt] tmpl=%s n=%d tail: %.100s\n",
-            tmpl == kGemmaTemplate    ? "gemma-fallback"
-            : tmpl == kChatMLTemplate ? "chatml-fallback"
-                                      : "gguf",
-            n, out.size() > 100 ? out.c_str() + out.size() - 100 : out.c_str());
+    // 6. Расширенная диагностика
+    fprintf(stderr, "[buildPrompt] model='%s', template_used=%s, length=%d, tail: '...%s'\n",
+            modelName.c_str(),
+            (tmpl == kGemmaTemplate) ? "gemma-fallback" : 
+            (tmpl == kChatMLTemplate) ? "chatml-forced/fallback" : "gguf-native",
+            n, 
+            out.size() > 100 ? out.c_str() + out.size() - 100 : out.c_str());
+            
     return out;
-
 }
 
 void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath, 
@@ -702,11 +725,22 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
 
     char piece[512];
     int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, false);
+    // === РЕЖИМ РЕНТГЕНА: Печатаем ВСЁ, что вернул декодер ===
+    if (n > 0) {
+        fprintf(stderr, "[DEBUG RAW TOKEN %d] len=%d, str='%.*s'\n", nGen, n, n, piece);
+    } else {
+        fprintf(stderr, "[DEBUG RAW TOKEN %d] len=%d (SPECIAL/CONTROL TOKEN)\n", nGen, n);
+    }
+    // === /РЕЖИМ РЕНТГЕНА ===
     if (n > 0) {
       pending.append(piece, n);
       const QString text = takeDecodableUtf8(pending);
       if (!text.isEmpty()) {
         const QString clean = stripChannels(channelHold, text);
+                // Печатаем, что осталось после очистки
+        if (clean.isEmpty() && !text.isEmpty()) {
+            fprintf(stderr, "[DEBUG STRIPPED] Text was eaten by stripChannels: '%s'\n", text.toStdString().c_str());
+        }
         if (!clean.isEmpty()) {
           full += clean.toStdString();
           emit tokenReceived(clean);
