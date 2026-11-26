@@ -34,14 +34,15 @@ void CodeIndex::Bm25Index::build(const std::vector<CodeChunk>& chunks) {
         std::string token;
         while (iss >> token) {
             // Приводим к нижнему регистру
-            std::transform(token.begin(), token.end(), token.begin(), ::tolower);
-            // Убираем не-алфавитные символы
-            token.erase(std::remove_if(token.begin(), token.end(), 
-                                       [](char c) { return !std::isalnum(c); }), 
-                        token.end());
-            if (!token.empty()) {
-                term_freq[token]++;
-            }
+          std::transform(token.begin(), token.end(), token.begin(),
+            [](unsigned char c) {
+              return static_cast<char>(std::tolower(c));
+            });
+
+          token.erase(std::remove_if(token.begin(), token.end(),
+            [](unsigned char c) {
+              return !std::isalnum(c);
+            }), token.end());
         }
         
         float dl = chunk.body.size();
@@ -50,7 +51,13 @@ void CodeIndex::Bm25Index::build(const std::vector<CodeChunk>& chunks) {
         for (const auto& [term, tf] : term_freq) {
             doc_freq[term]++;
             float idf = std::log((total_docs - doc_freq[term] + 0.5f) / (doc_freq[term] + 0.5f) + 1.0f);
-            float tf_norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avg_dl));
+            float tf_norm = 0;
+            if (avg_dl == 0) {
+              tf_norm = (tf * (k1 + 1)) / (tf + k1);
+            }
+            else {
+              tf_norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avg_dl));
+            }
             postings[term].push_back({i, idf * tf_norm});
         }
     }
@@ -65,10 +72,15 @@ std::vector<std::pair<uint32_t, float>> CodeIndex::Bm25Index::search(
     std::istringstream iss(query);
     std::string token;
     while (iss >> token) {
-        std::transform(token.begin(), token.end(), token.begin(), ::tolower);
-        token.erase(std::remove_if(token.begin(), token.end(), 
-                                   [](char c) { return !std::isalnum(c); }), 
-                    token.end());
+      std::transform(token.begin(), token.end(), token.begin(),
+        [](unsigned char c) {
+          return static_cast<char>(std::tolower(c));
+        });
+
+      token.erase(std::remove_if(token.begin(), token.end(),
+        [](unsigned char c) {
+          return !std::isalnum(c);
+        }), token.end());
         
         if (token.empty()) continue;
         
