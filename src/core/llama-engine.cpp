@@ -484,6 +484,12 @@ void LlamaWorker::load(const QString &modelPath, QString mmprojPath, int nCtx) {
             qDebug() << "[SilverBrain] Autodetect: appropriate MTP draft not found. Running in standard mode.";
         }
     }
+    if (!mtpPath.isEmpty()) {
+        qDebug() << "[SilverBrain] MTP draft path:" << mtpPath;
+        // ctxParams.speculative.model = mtpPath.toStdString().c_str(); 
+        // ctxParams.speculative.type = "draft-mtp"; 
+        // ctxParams.speculative.draft_sampling = true; 
+    }
   // =========================================================
 
     // Сохраняем текущие пути в переменные класса (если они у вас есть)
