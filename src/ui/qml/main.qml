@@ -97,6 +97,15 @@ ApplicationWindow {
                 }
             }
 
+            FolderDialog {
+                id: projectFolderDialog
+                title: "Choose project folder to index"
+                onAccepted: {
+                    silverBrain.projectPath = selectedFolder.toLocalFile()
+                    silverBrain.buildIndex()
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Button {
@@ -108,6 +117,32 @@ ApplicationWindow {
                     enabled: !silverBrain.busy && !silverBrain.loading
                     onClicked: loadDialog.open()
                 }
+            }
+
+            Button {
+                text: silverBrain.isIndexing ? "Indexing project..." : "Index project"
+                Layout.fillWidth: true
+                enabled: !silverBrain.busy && !silverBrain.loading &&
+                         !silverBrain.isIndexing && embeddingEngine.loaded
+                onClicked: projectFolderDialog.open()
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: silverBrain.isIndexing || silverBrain.projectPath !== ""
+                text: silverBrain.indexingStatus.startsWith("Error:")
+                      ? silverBrain.indexingStatus
+                      : silverBrain.indexReady && !silverBrain.isIndexing
+                        ? "Project index ready"
+                        : silverBrain.indexingStatus
+                color: "#6b7280"
+                elide: Text.ElideMiddle
+            }
+            ProgressBar {
+                Layout.fillWidth: true
+                visible: silverBrain.isIndexing
+                from: 0
+                to: 1
+                value: silverBrain.indexProgress
             }
 
             Label { text: "Temperature: " + silverBrain.temperature.toFixed(2); color: "#26251f" }
@@ -190,13 +225,13 @@ ApplicationWindow {
                         text: "Load model"
                         background: Rectangle { radius: 6; color: "#e7e4de" }
                         onClicked: {
-                            if (silverBrain.busy) {
-                                console.log("Engine busy")
+                            if (silverBrain.busy || silverBrain.loading) {
+                                console.log("Engine busy or loading")
                                 return
                             }
                             modelFileDialog.open()
                         }
-                        enabled: !silverBrain.busy
+                        enabled: !silverBrain.busy && !silverBrain.loading
                     }
         /*            FileDialog {
                         id: mmprojDialog
@@ -341,7 +376,7 @@ ApplicationWindow {
                             color: "#ffffff"
                             border.color: "#d9d6cf"
                         }
-                        enabled: !silverBrain.busy
+                        enabled: !silverBrain.busy && !silverBrain.loading
                         placeholderText: "Type your message..."
                           // Отправка — Cmd+Enter / Ctrl+Enter или кнопкой
                         Keys.onPressed: (event) => {
@@ -365,7 +400,7 @@ ApplicationWindow {
                     }
                     Button {
                         text: "📎"
-                        enabled: !silverBrain.busy
+                        enabled: !silverBrain.busy && !silverBrain.loading
                         onClicked: attachDialog.open()
                     }
                     Label {
@@ -387,13 +422,13 @@ ApplicationWindow {
                             }
                         contentItem: Text { text: parent.text; color: "#ffffff"
                                 horizontalAlignment: Text.AlignHCenter }
-                        enabled: !silverBrain.busy
+                        enabled: !silverBrain.busy && !silverBrain.loading
                         onClicked: sendMessage()
                     }
                     Button {
                         text: "Clear"
                         background: Rectangle { radius: 6; color: "#e7e4de" }
-                        enabled: !silverBrain.busy
+                        enabled: !silverBrain.busy && !silverBrain.loading
                         onClicked: {
                             chatModel.clear()
                             silverBrain.clearHistory()

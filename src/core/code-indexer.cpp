@@ -3,9 +3,10 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
+#include <exception>
 #include <tree_sitter/api.h>
 
-// Внешние функции из граммтик tree-sitter
+// Внешние функции из грамматик tree-sitter
 extern "C" {
     const TSLanguage* tree_sitter_cpp();
     const TSLanguage* tree_sitter_c();
@@ -112,23 +113,39 @@ void CodeIndexer::buildIndex(const QString& projectPath, const QString& indexPat
     
     ts_parser_delete(parser);
     
+    if (index.chunks().empty()) {
+        emit finished(false, "No supported code chunks found in the selected project.");
+        return;
+    }
+
     // Генерация embedding'ов
     emit progress(0.9f, "Generating embeddings...");
-    for (size_t i = 0; i < index.chunks().size(); ++i) {
-        const auto& chunk = index.chunks()[i];
-        std::string text = chunk.signature + " " + chunk.body;
-        auto emb = m_emb->encode(QString::fromStdString(text));
-        index.setEmbedding(i, emb);
+    int embeddingDimensions = 0;
+    try {
+        for (size_t i = 0; i < index.chunks().size(); ++i) {
+            const auto& chunk = index.chunks()[i];
+            std::string text = chunk.signature + " " + chunk.body;
+            auto emb = m_emb->encode(QString::fromStdString(text));
+            index.setEmbedding(i, emb);
+        }
+        embeddingDimensions = m_emb->dimensions();
+    } catch (const std::exception& e) {
+        emit finished(false, QString::fromStdString(e.what()));
+        return;
     }
     
     // Построение индексов
-    emit progress(0.95f, "Building indexes...");
-    index.buildBm25();
-    index.buildHnsw(m_emb->dimensions());
-    
-    // Сохранение
-    if (!index.save(indexPath)) {
-        emit finished(false, "Failed to save index");
+    try {
+        emit progress(0.95f, "Building indexes...");
+        index.buildBm25();
+        index.buildHnsw(embeddingDimensions);
+
+        if (!index.save(indexPath)) {
+            emit finished(false, "Failed to save index");
+            return;
+        }
+    } catch (const std::exception& e) {
+        emit finished(false, QString::fromStdString(e.what()));
         return;
     }
     

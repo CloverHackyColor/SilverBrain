@@ -14,6 +14,7 @@ public:
     CodeIndex() = default;
     
     // Построение
+    void clear();
     void addChunk(CodeChunk chunk);
     void buildBm25();
     void buildHnsw(int dims);  // создаёт HNSW-индекс заданной размерности
@@ -52,6 +53,7 @@ private:
     } m_bm25;
     
     // HNSW индекс
+    std::unique_ptr<hnswlib::L2Space> m_space;
     std::unique_ptr<hnswlib::HierarchicalNSW<float>> m_hnsw;
     int m_hnsw_dims = 0;
 };

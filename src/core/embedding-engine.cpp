@@ -1,14 +1,9 @@
 // src/core/embedding-engine.cpp
 #include "embedding-engine.h"
+#include <algorithm>
 #include <cmath>
+#include <exception>
 #include <stdexcept>
-
-namespace {
-  int32_t usedTokens(llama_context *ctx) {
-    llama_pos pmax = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
-    return pmax < 0 ? 0 : static_cast<int32_t>(pmax) + 1;
-  }
-}
 
 // ============================ EmbeddingWorker ==============================
 EmbeddingWorker::~EmbeddingWorker() {
@@ -49,10 +44,7 @@ bool EmbeddingWorker::decodeTokens(llama_context *ctx, const llama_token *tokens
   
 
 void EmbeddingWorker::load(const QString& modelPath) {
-    if (m_model) {
-        emit modelLoaded(true, {});
-        return;
-    }
+    releaseModel();
     
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 99;
@@ -70,6 +62,7 @@ void EmbeddingWorker::load(const QString& modelPath) {
     cparams.n_ctx = 2048;  // embedding-модели обычно имеют фиксированный max_ctx
     cparams.n_batch = 512;
     cparams.n_ubatch = 512;
+    cparams.embeddings = true;
     
     // Определяем pooling type из метаданных модели
     // nomic-embed-text использует MEAN pooling
@@ -104,6 +97,9 @@ std::vector<float> EmbeddingWorker::encode(const QString& text) {
         n = llama_tokenize(m_vocab, utf8.c_str(), utf8.size(),
                            tokens.data(), tokens.size(), true, false);
     }
+    if (n < 0) {
+        throw std::runtime_error("Failed to tokenize embedding input");
+    }
     tokens.resize(n);
     
     if (n > m_nCtx) {
@@ -112,26 +108,22 @@ std::vector<float> EmbeddingWorker::encode(const QString& text) {
         n = m_nCtx;
     }
     
-    // Декод
-    // llama_memory_clear(llama_get_memory(m_ctx), true);
-    // llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
-    
-    // if (llama_decode(m_ctx, batch) != 0) {
-    //     throw std::runtime_error("llama_decode failed in embedding");
-    // }
+    if (tokens.empty()) {
+        throw std::runtime_error("Embedding input contains no tokens");
+    }
 
-    llama_pos nextPos = usedTokens(m_ctx);
+    llama_memory_clear(llama_get_memory(m_ctx), true);
     const int32_t nBatch = static_cast<int32_t>(llama_n_batch(m_ctx));
+    if (nBatch <= 0) {
+        throw std::runtime_error("Embedding context has an invalid batch size");
+    }
     const int32_t nTok = static_cast<int32_t>(tokens.size());
-    for (int32_t pos = 0; pos < nTok; ) {
+    for (int32_t pos = 0; pos < nTok;) {
       const int32_t chunk = std::min(nBatch, nTok - pos);
-      if (!decodeTokens(m_ctx, tokens.data() + pos, chunk, nextPos)) {
+      if (!decodeTokens(m_ctx, tokens.data() + pos, chunk, pos)) {
         throw std::runtime_error("embedding_process failed");
-        break;
       }
-      nextPos += chunk;
       pos += chunk;
-//      emit promptProgress(static_cast<int>(pos * 100 / nTok));
     }
     
     // Извлечение embedding
@@ -151,39 +143,7 @@ std::vector<float> EmbeddingWorker::encode(const QString& text) {
     }
     
     return result;
-} 
-// Проблема: QMetaObject::invokeMethod с Q_RETURN_ARG для std::vector<float> не работает напрямую.
-// Исправленный encode в EmbeddingEngine
-// std::vector<float> EmbeddingEngine::encode(const QString& text) {
-//     QVariant resultVar;
-//     QMetaObject::invokeMethod(m_worker, [this, text]() -> QVariant {
-//         auto vec = m_worker->encode(text);
-//         // Конвертируем в QVariantList для передачи через сигналы
-//         QVariantList list;
-//         list.reserve(vec.size());
-//         for (float v : vec) list.append(v);
-//         return QVariant(list);
-//     }, Qt::BlockingQueuedConnection, Q_RETURN_ARG(QVariant, resultVar));
-    
-//     // Конвертируем обратно
-//     QVariantList list = resultVar.toList();
-//     std::vector<float> result;
-//     result.reserve(list.size());
-//     for (const auto& v : list) result.append(v.toFloat());
-//     return result;
-// }
-
-// Альтернатива: прямой доступ (worker живёт в другом потоке, но encode — const операция)
-// std::vector<float> EmbeddingEngine::encode(const QString& text) {
-//     // Используем QMetaObject::invokeMethod с лямбдой
-//     std::vector<float> result;
-//     bool ok = QMetaObject::invokeMethod(m_worker, [&]() {
-//         result = m_worker->encode(text);
-//     }, Qt::BlockingQueuedConnection);
-    
-//     if (!ok) throw std::runtime_error("Failed to invoke encode");
-//     return result;
-// }
+}
 
 // ============================ EmbeddingEngine ==============================
 EmbeddingEngine::EmbeddingEngine(QObject* parent) : QObject(parent) {
@@ -203,6 +163,10 @@ EmbeddingEngine::~EmbeddingEngine() {
 }
 
 void EmbeddingEngine::loadModel(const QString& modelPath) {
+    if (m_loaded) {
+        m_loaded = false;
+        emit loadedChanged();
+    }
     emit loadModelRequested(modelPath);
 }
 
@@ -220,25 +184,42 @@ bool EmbeddingEngine::unloadModel() {
 
 std::vector<float> EmbeddingEngine::encode(const QString& text) {
     std::vector<float> result;
-    QMetaObject::invokeMethod(m_worker, "encode", Qt::BlockingQueuedConnection,
-                              Q_RETURN_ARG(std::vector<float>, result),
-                              Q_ARG(QString, text));
+    std::exception_ptr error;
+    const bool invoked = QMetaObject::invokeMethod(
+        m_worker,
+        [this, &text, &result, &error]() {
+            try {
+                result = m_worker->encode(text);
+            } catch (...) {
+                error = std::current_exception();
+            }
+        },
+        Qt::BlockingQueuedConnection);
+    if (!invoked) {
+        throw std::runtime_error("Failed to invoke embedding worker");
+    }
+    if (error) {
+        std::rethrow_exception(error);
+    }
     return result;
 }
 
 int EmbeddingEngine::dimensions() const {
     int dims = 0;
-    // Используем BlockingQueuedConnection, чтобы дождаться выполнения в потоке воркера
-    QMetaObject::invokeMethod(m_worker, [this, &dims]() {
+    const bool invoked = QMetaObject::invokeMethod(m_worker, [this, &dims]() {
         dims = m_worker->dimensions();
     }, Qt::BlockingQueuedConnection);
-    
+    if (!invoked) {
+        throw std::runtime_error("Failed to read embedding dimensions");
+    }
     return dims;
 }
 
 void EmbeddingEngine::onModelLoaded(bool ok, const QString& error) {
-    m_loaded = ok;
-    emit loadedChanged();
+    if (m_loaded != ok) {
+        m_loaded = ok;
+        emit loadedChanged();
+    }
     emit modelLoaded(ok, error);
 }
 
