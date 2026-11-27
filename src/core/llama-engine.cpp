@@ -110,47 +110,6 @@ bool decodeTokens(llama_context *ctx, const llama_token *tokens, int32_t n,
 constexpr char kMagic[4] = {'S', 'B', 'C', 'Z'}; // SilverBrain Compressed
 constexpr uint8_t kFormatVersion = 1;
 
-// QByteArray lzmaCompress(const QByteArray &raw, QString *error) {
-//   size_t bound = lzma_stream_buffer_bound(static_cast<size_t>(raw.size()));
-//   QByteArray out;
-//   out.resize(static_cast<int>(bound));
-//   size_t outPos = 0;
-//   lzma_ret r = lzma_stream_buffer_encode(
-//       reinterpret_cast<const uint8_t *>(raw.constData()),
-//       static_cast<size_t>(raw.size()), LZMA_CHECK_CRC64,
-//       reinterpret_cast<uint8_t *>(out.data()), &outPos);
-//   if (r != LZMA_OK) {
-//     if (error) *error = QStringLiteral("lzma encode failed
-//     (%1)").arg(int(r)); return {};
-//   }
-//   out.truncate(static_cast<int>(outPos));
-//   return out;
-// }
-
-// QByteArray lzmaDecompress(const uint8_t *data, size_t size, QString *error) {
-//   size_t outPos = 0, inPos = 0;
-//   // JSON истории всегда меньше исходника, но памяти просим с запасом ×4
-//   QByteArray out(static_cast<int>(size * 4) + 65536, 0);
-//   lzma_ret r = LZMA_OK;
-//   for (;;) {
-//     size_t cap = static_cast<size_t>(out.size());
-//     r = lzma_stream_buffer_decode(
-//         reinterpret_cast<uint8_t *>(out.data()), &outPos, nullptr,
-//         data, &inPos, size);
-//     if (r == LZMA_BUF_ERROR) { // буфер мал — растим и пробуем снова
-//       out.resize(out.size() * 2);
-//       continue;
-//     }
-//     break;
-//   }
-//   if (r != LZMA_OK) {
-//     if (error) *error = QStringLiteral("lzma decode failed
-//     (%1)").arg(int(r)); return {};
-//   }
-//   out.truncate(static_cast<int>(outPos));
-//   return out;
-// }
-
 } // namespace
 
 namespace MmprojAutoDetect {
@@ -352,8 +311,8 @@ static bool modelHasMTP(const QString &path) {
   return layers && *layers > 0;
 }
 
-// "Очищает" имя файла, удаляя маркеры MTP и квантования, оставляя базовое имя
-// (аналог mtpStem)
+// Улучшенная очистка имени файла от маркеров MTP, "distill", "head" и
+// квантования
 static QString mtpStem(const QString &fileName) {
   QString s = fileName.toLower();
   if (s.endsWith(".gguf"))
@@ -363,26 +322,35 @@ static QString mtpStem(const QString &fileName) {
     s = s.left(s.length() - 4) + "-mtp";
   }
 
-  QStringList parts = s.split("-");
-  auto isMarker = [](const QString &t) {
-    static const QSet<QString> markers = {
-        "ud",   "mtp",   "nextn", "shared", "draft", "of", "f16", "f32",
-        "bf16", "mxfp4", "xl",    "xs",     "s",     "m",  "l",   "k"};
-    if (markers.contains(t))
-      return true;
-    static const QRegularExpression re(R"(^((i?q\d+(_[a-z0-9]+)*)|(\d{5}))$)");
-    return re.match(t).hasMatch();
-  };
+  // Расширенный список маркеров для удаления
+  QStringList markers = {
+      "mtp",    "nextn",  "shared",  "draft",  "distill", "head", "of",
+      "f16",    "f32",    "bf16",    "mxfp4",  "ud",      "xl",   "xs",
+      "s",      "m",      "l",       "k",      "q4_0",    "q4_1", "q5_0",
+      "q5_1",   "q8_0",   "q2_k",    "q3_k",   "q4_k",    "q5_k", "q6_k",
+      "q4_k_m", "q8_k_m", "iq2_xxs", "iq3_xs", "imatrix"};
 
-  while (!parts.isEmpty() && isMarker(parts.first()))
-    parts.removeFirst();
-  while (!parts.isEmpty() && isMarker(parts.last()))
-    parts.removeLast();
+  for (const QString &marker : markers) {
+    // Удаляем маркер, если он окружен дефисами/подчеркиваниями или является
+    // началом/концом строки
+    s.replace(QRegularExpression(QString("[-_]") + marker + QString("[-_]")),
+              "-");
+    if (s.endsWith("-" + marker))
+      s.chop(marker.length() + 1);
+    if (s.startsWith(marker + "-"))
+      s.remove(0, marker.length() + 1);
+    if (s == marker)
+      s = "";
+  }
 
-  return parts.join("-");
+  // Очищаем от множественных разделителей и обрезаем края
+  s = s.replace(QRegularExpression("[-_]+"), "-");
+  s = s.replace(QRegularExpression("^-+|-+$"), "");
+
+  return s;
 }
 
-// Проверка совместимости MTP head и base model (аналог mtpHeadMatches)
+// Проверка совместимости MTP head и base model
 static bool mtpHeadMatches(const QString &headPath, const QString &modelPath) {
   auto headArch =
       getGgufString(headPath, QStringLiteral("general.architecture"));
@@ -429,19 +397,19 @@ static bool mtpHeadMatches(const QString &headPath, const QString &modelPath) {
   return true;
 }
 
-// Поиск пути к MTP draft модели (аналог mtpDraftPath)
+// Поиск пути к MTP draft модели
 static QString findDraft(const QString &modelPath) {
   if (modelPath.isEmpty())
     return QString();
   if (modelHasMTP(modelPath)) {
-    // Если модель уже имеет встроенный MTP (nextn слои), отдельный head не
-    // нужен
-    return QString();
+    return QString(); // Встроенный MTP, отдельный файл не нужен
   }
 
   QFileInfo fi(modelPath);
   QDir dir = fi.dir();
   QString modelStem = mtpStem(fi.fileName());
+
+  qDebug() << "[SilverBrain] MTP Autodetect: modelStem =" << modelStem;
 
   QStringList files;
   // 1. Файлы в той же директории
@@ -475,8 +443,13 @@ static QString findDraft(const QString &modelPath) {
       continue;
 
     QString stem = mtpStem(fiFile.fileName());
-    if (stem != modelStem && !modelStem.startsWith(stem) &&
-        !stem.startsWith(modelStem)) {
+    qDebug() << "[SilverBrain] MTP Autodetect: candidate stem =" << stem
+             << "for" << fiFile.fileName();
+
+    // Более мягкое сравнение: одно должно содержаться в другом (например,
+    // "qwen3.8-9b" в "dirk-qwen3.8-9b")
+    if (stem != modelStem && !modelStem.contains(stem) &&
+        !stem.contains(modelStem)) {
       continue;
     }
 
@@ -501,6 +474,11 @@ static QString findDraft(const QString &modelPath) {
     return QString();
   }
 
+  if (!pool.isEmpty()) {
+    qDebug() << "[SilverBrain] MTP Autodetect: SUCCESS! Selected:"
+             << pool.first();
+  }
+
   return pool.isEmpty() ? QString() : pool.first();
 }
 
@@ -511,6 +489,8 @@ static QString findDraft(const QString &modelPath) {
 LlamaWorker::~LlamaWorker() {
   if (sampler)
     common_sampler_free(sampler);
+  if (spec)
+    common_speculative_free(spec);
   if (context)
     llama_free(context);
   if (mctx)
@@ -617,58 +597,66 @@ void LlamaWorker::load(const QString &modelPath, QString mmprojPath, int nCtx) {
   // =========================================================
   // НОВАЯ ЛОГИКА: АВТОМАТИЧЕСКИЙ ПОИСК MTP DRAFT, ЕСЛИ ПУСТО
   // =========================================================
+  // =========================================================
+  // ЛОГИКА ВКЛЮЧЕНИЯ MTP (ВСТРОЕННЫЙ ИЛИ ВНЕШНИЙ)
+  // =========================================================
+  bool hasBuiltInMtp = MtpAutoDetect::modelHasMTP(modelPath);
   QString mtpPath;
-  if (mtpPath.isEmpty()) {
-    mtpPath = MtpAutoDetect::findDraft(modelPath);
-    if (!mtpPath.isEmpty()) {
-      qDebug() << "[SilverBrain] Autodetect: found and attached MTP draft:"
-               << mtpPath;
-    } else {
-      qDebug() << "[SilverBrain] Autodetect: appropriate MTP draft not found. "
-                  "Running in standard mode.";
-    }
-  }
-  // Инициализация speculative decoding
-  if (!mtpPath.isEmpty()) {
-    // Создаем common_params для speculative
-    common_params spec_params;
 
-    // 1. Указываем тип спекуляции (из enum common_speculative_type в common.h)
+  if (!hasBuiltInMtp) {
+    // Ищем внешний файл только если встроенного MTP нет
+    mtpPath = MtpAutoDetect::findDraft(modelPath);
+  }
+
+  if (hasBuiltInMtp || !mtpPath.isEmpty()) {
+    if (hasBuiltInMtp) {
+      qDebug() << "[SilverBrain] Model has built-in MTP (nextn_predict_layers "
+                  "> 0). Enabling speculative decoding.";
+    } else {
+      qDebug() << "[SilverBrain] Autodetect: found external MTP draft:"
+               << mtpPath;
+    }
+
+    common_params spec_params;
+    spec_params.model.path = modelPath.toStdString();
+
+    // Указываем тип спекуляции
     spec_params.speculative.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
 
-    // 2. ВАЖНО: Путь к MTP файлу задается через вложенную структуру
-    // draft.mparams
-    spec_params.speculative.draft.mparams.path = mtpPath.toStdString();
-
-    // 3. Количество токенов для драфта (по умолчанию 3, для MTP оптимально 5-7)
+    // Количество токенов для драфта (для встроенного MTP обычно 3-5)
     spec_params.speculative.draft.n_max = 5;
 
-    // 4. Включаем вероятностное сэмплирование (критично для MTP при temperature
-    // > 0)
+    // КРИТИЧНО: Включаем вероятностное сэмплирование для корректной работы с
+    // temperature > 0
     spec_params.speculative.draft.probabilistic = true;
 
+    // Если MTP внешний, указываем путь.
+    // Если встроенный, оставляем path пустым, и llama.cpp сама возьмет головы
+    // из основной модели.
+    if (!mtpPath.isEmpty()) {
+      spec_params.speculative.draft.mparams.path = mtpPath.toStdString();
+    }
+
     try {
-      // Инициализируем результат (эта функция загрузит draft-модель и создаст
-      // ctx_dft)
       spec_init =
           common_speculative_init_from_params(spec_params, model, context);
 
       if (spec_init) {
-        // Связываем контексты (требуется API для корректной работы)
         spec_params.speculative.draft.ctx_tgt = context;
         spec_params.speculative.draft.ctx_dft = spec_init->context();
 
-        // Создаем основной объект спекуляции (1 = n_seq_max, так как у нас один
-        // чат-поток)
         spec = common_speculative_init(spec_params.speculative, 1);
 
         if (spec) {
           qDebug() << "[SilverBrain] MTP speculative decoding initialized "
                       "successfully";
+          // Сохраняем статус для отладки или UI
+          currentMtpPath =
+              hasBuiltInMtp ? QStringLiteral("(built-in)") : mtpPath;
         } else {
           qWarning()
               << "[SilverBrain] common_speculative_init returned nullptr";
-          spec_init.reset(); // Очистка при неудаче
+          spec_init.reset();
           spec = nullptr;
         }
       } else {
@@ -681,6 +669,10 @@ void LlamaWorker::load(const QString &modelPath, QString mmprojPath, int nCtx) {
       if (spec_init)
         spec_init.reset();
     }
+  } else {
+    qDebug() << "[SilverBrain] No MTP detected (neither built-in nor "
+                "external). Running in standard mode.";
+    currentMtpPath = "";
   }
 
   // Сохраняем текущие пути в переменные класса (если они у вас есть)

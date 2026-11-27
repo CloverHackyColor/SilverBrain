@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "llama.h" // достаточно одного include: таргет llama сам экспортирует
-    // нужные include-директории через target_include_directories
+// нужные include-директории через target_include_directories
 #include "common.h"
 #include "mtmd-helper.h"
 #include "mtmd.h"
