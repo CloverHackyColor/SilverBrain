@@ -15,6 +15,7 @@ class SilverBrainEngine : public QObject {
     // --- Проксирование свойств LlamaEngine ---
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(bool loading READ loading NOTIFY loadingChanged)
+    Q_PROPERTY(bool embeddingLoading READ embeddingLoading NOTIFY loadingChanged)
     Q_PROPERTY(qreal loadProgress READ loadProgress NOTIFY loadProgressChanged)
     Q_PROPERTY(int contextSize READ contextSize WRITE setContextSize NOTIFY
                    contextSizeChanged)
@@ -41,6 +42,7 @@ public:
     
     // Проксирование методов LlamaEngine
     Q_INVOKABLE void loadModel(const QString& modelPath);
+    Q_INVOKABLE void loadEmbeddingModel(const QString& modelPath);
     Q_INVOKABLE void generateAsync(const QString& prompt);
     Q_INVOKABLE void clearHistory() { m_llm->clearHistory(); }
     Q_INVOKABLE void stopGeneration() { m_llm->stopGeneration(); }
@@ -65,6 +67,7 @@ public:
     // Проксирование сигналов LlamaEngine
     bool busy() const { return m_llm->busy(); }
     bool loading() const { return m_llm->loading() || m_embeddingLoading; }
+    bool embeddingLoading() const { return m_embeddingLoading; }
     qreal loadProgress() const { return m_llm->loadProgress(); }
     int contextSize() const { return m_llm->contextSize(); }
     qreal temperature() const { return m_llm->temperature(); }
@@ -113,8 +116,7 @@ public:
     
 private slots:
     void onLlmModelLoaded(bool ok, const QString& error);
-    void onEmbeddingModelLoaded(bool ok, const QString& error);
-    void onModelUnloaded();
+    void onEmbeddingModelLoaded(bool, const QString&);
     void onRetrievalFinished(const QStringList& relevantChunks);
     void onRetrievalError(const QString& error);
     void onIndexerProgress(float percent, const QString& currentFile);
@@ -130,7 +132,6 @@ private:
     
     QString m_projectPath;
     QString m_pendingPrompt;
-    QString m_pendingEmbeddingPath;
     bool m_embeddingLoading = false;
     bool m_isIndexing = false;
     float m_indexProgress = 0.0f;

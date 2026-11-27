@@ -10,6 +10,7 @@ ApplicationWindow {
     title: "Silver Brain"
     color: "#f6f5f2"
     property string selectedModelPath: ""
+    property bool indexAfterEmbeddingLoad: false
 
     // Универсальная функция для получения локального пути из QML FileDialog
     // Работает в Qt 5.15, Qt 6, Windows, macOS, Linux
@@ -130,6 +131,19 @@ ApplicationWindow {
                 }
             }
 
+            FileDialog {
+                id: embeddingModelDialog
+                title: "Choose embedding model"
+                nameFilters: ["GGUF model (*.gguf)"]
+                onAccepted: {
+                    var fileProp = (typeof selectedFile !== 'undefined') ? selectedFile : file
+                    var path = getLocalPath(fileProp)
+                    indexAfterEmbeddingLoad = true
+                    statusLabel.text = "Embedding model loading..."
+                    silverBrain.loadEmbeddingModel(path)
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Button {
@@ -147,8 +161,13 @@ ApplicationWindow {
                 text: silverBrain.isIndexing ? "Indexing project..." : "Index project"
                 Layout.fillWidth: true
                 enabled: !silverBrain.busy && !silverBrain.loading &&
-                         !silverBrain.isIndexing && embeddingEngine.loaded
-                onClicked: projectFolderDialog.open()
+                         !silverBrain.isIndexing
+                onClicked: {
+                    if (embeddingEngine.loaded)
+                        projectFolderDialog.open()
+                    else
+                        embeddingModelDialog.open()
+                }
             }
             Label {
                 Layout.fillWidth: true
@@ -306,6 +325,7 @@ ApplicationWindow {
                     from: 0
                     to: 1
                     value: silverBrain.loadProgress
+                    indeterminate: silverBrain.embeddingLoading
                     background: null                    // убираем подложку и её отступы
                     contentItem: Item {
                         Rectangle {
@@ -510,7 +530,7 @@ ApplicationWindow {
     Connections {
         target: silverBrain
         function onLoadProgressChanged() {
-            if (silverBrain.loading)
+            if (llamaEngine.loading)
                 statusLabel.text = "Model loading...: " +
                     Math.round(silverBrain.loadProgress * 100) + "%"
         }
@@ -563,5 +583,17 @@ ApplicationWindow {
             statusLabel.text = ok ? qsTr("History is saved") : qsTr("Saving error");
         }
 
+    }
+
+    Connections {
+        target: embeddingEngine
+        function onModelLoaded(ok, error) {
+            statusLabel.text = ok ? "Embedding model loaded" : ("Ошибка: " + error)
+            if (indexAfterEmbeddingLoad) {
+                indexAfterEmbeddingLoad = false
+                if (ok)
+                    projectFolderDialog.open()
+            }
+        }
     }
 }

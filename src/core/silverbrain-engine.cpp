@@ -3,8 +3,6 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QFile>
-#include <QFileInfo>
-#include <QDebug>
 #include <utility>
 
 SilverBrainEngine::SilverBrainEngine(LlamaEngine* llm, EmbeddingEngine* emb, QObject* parent)
@@ -13,8 +11,6 @@ SilverBrainEngine::SilverBrainEngine(LlamaEngine* llm, EmbeddingEngine* emb, QOb
     // Проксирование сигналов LlamaEngine
     connect(m_llm, &LlamaEngine::modelLoaded, this,
             &SilverBrainEngine::onLlmModelLoaded);
-    connect(m_llm, &LlamaEngine::modelUnloaded, this,
-            &SilverBrainEngine::onModelUnloaded);
     connect(m_llm, &LlamaEngine::tokenReceived, this,
             &SilverBrainEngine::tokenReceived);
     connect(m_llm, &LlamaEngine::generationFinished, this,
@@ -103,34 +99,12 @@ void SilverBrainEngine::setProjectPath(const QString& path) {
 }
 
 void SilverBrainEngine::onLlmModelLoaded(bool ok, const QString& error) {
-    if (!ok) {
-        m_embeddingLoading = false;
-        m_pendingEmbeddingPath.clear();
-        emit loadingChanged();
-        emit modelLoaded(false, error);
-        return;
-    }
-
-    if (m_pendingEmbeddingPath.isEmpty()) {
-        emit modelLoaded(false,
-                         "LLM loaded, but no embedding model was found beside it; RAG is unavailable.");
-        return;
-    }
-
-    m_emb->loadModel(m_pendingEmbeddingPath);
-    m_pendingEmbeddingPath.clear();
+    emit modelLoaded(ok, error);
 }
 
-void SilverBrainEngine::onEmbeddingModelLoaded(bool ok, const QString& error) {
+void SilverBrainEngine::onEmbeddingModelLoaded(bool, const QString&) {
     m_embeddingLoading = false;
     emit loadingChanged();
-    emit modelLoaded(ok, ok ? QString() : error);
-}
-
-void SilverBrainEngine::onModelUnloaded() {
-    if (!m_emb->unloadModel()) {
-        emit generationError("Failed to unload embedding model");
-    }
 }
 
 void SilverBrainEngine::generateAsync(const QString& prompt) {
@@ -250,43 +224,21 @@ void SilverBrainEngine::loadModel(const QString& modelPath) {
         return;
     }
 
-    if (m_emb->loaded() && !m_emb->unloadModel()) {
-        emit generationError("Failed to unload the previous embedding model");
+    m_llm->loadModel(modelPath);
+}
+
+void SilverBrainEngine::loadEmbeddingModel(const QString& modelPath) {
+    if (busy() || loading() || m_isIndexing || modelPath.isEmpty()) {
         return;
     }
-    if (m_index.isBuilt()) {
+
+    if (m_index.isBuilt() || QFile::exists(indexPath())) {
         deleteIndex();
     }
 
-    m_pendingEmbeddingPath.clear();
-    
-    // Автоматически ищем embedding-модель в той же папке.
-    QFileInfo fi(modelPath);
-    QDir dir = fi.absoluteDir();
-    
-    // Ищем файлы, содержащие "nomic" или "embed" и заканчивающиеся на .gguf
-    // Это гибче, чем жестко заданное имя файла
-    QStringList filters;
-    filters << "*nomic*.gguf" << "*embed*.gguf";
-    
-    dir.setNameFilters(filters);
-    dir.setFilter(QDir::Files);
-    QStringList embedFiles = dir.entryList();
-    
-    if (!embedFiles.isEmpty()) {
-        m_pendingEmbeddingPath = dir.absoluteFilePath(embedFiles.first());
-        qDebug() << "[SilverBrain] Auto-discovered embedding model:"
-                 << m_pendingEmbeddingPath;
-    } else {
-        qDebug() << "[SilverBrain] Embedding model not found in" << dir.absolutePath();
-        qDebug() << "[SilverBrain] Tip: Place nomic-embed-text-v1.5-Q8_0.gguf next to your LLM model for semantic search.";
-    }
-
-    if (!m_pendingEmbeddingPath.isEmpty()) {
-        m_embeddingLoading = true;
-        emit loadingChanged();
-    }
-    m_llm->loadModel(modelPath);
+    m_embeddingLoading = true;
+    emit loadingChanged();
+    m_emb->loadModel(modelPath);
 }
 
 void SilverBrainEngine::ask(const QString& prompt) {
