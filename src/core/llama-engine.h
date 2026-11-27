@@ -78,6 +78,35 @@ private:
   //   символы
   QVariantList historyToVariant() const;
 
+  // --- Новые вспомогательные методы для рефакторинга generateAsync ---
+  bool
+  processImagePrompt(const QString &imagePath, const std::string &userText,
+                     int32_t nCtx, llama_pos &nextPos, int32_t &nPromptTokens,
+                     double &promptSec,
+                     const std::chrono::steady_clock::time_point &promptStart,
+                     mtmd_bitmap *&bmp);
+
+  bool
+  processTextPrompt(const std::string &userText, int32_t nCtx,
+                    llama_pos &nextPos, int32_t &nPromptTokens,
+                    double &promptSec,
+                    const std::chrono::steady_clock::time_point &promptStart);
+
+  // Обрабатывает один принятый токен (декодирование, UTF-8, stripChannels).
+  // Возвращает true, если достигнут EOG и генерацию нужно остановить.
+  bool handleAcceptedToken(llama_token tok, std::string &full,
+                           std::string &pending, int &nGen);
+
+  // Эмитит сигналы статистики каждые 16 токенов
+  void
+  emitGenerationStats(int nGen,
+                      const std::chrono::steady_clock::time_point &genStart);
+
+  // Финальная сборка ответа, обновление истории и отправка сигналов завершения
+  void
+  finalizeGeneration(std::string &full, std::string &pending, int nGen,
+                     const std::chrono::steady_clock::time_point &genStart);
+
   llama_model *model = nullptr;
   llama_context *context = nullptr;
   common_sampler *sampler = nullptr;

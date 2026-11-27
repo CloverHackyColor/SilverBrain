@@ -401,9 +401,6 @@ static bool mtpHeadMatches(const QString &headPath, const QString &modelPath) {
 static QString findDraft(const QString &modelPath) {
   if (modelPath.isEmpty())
     return QString();
-  if (modelHasMTP(modelPath)) {
-    return QString(); // Встроенный MTP, отдельный файл не нужен
-  }
 
   QFileInfo fi(modelPath);
   QDir dir = fi.dir();
@@ -595,9 +592,6 @@ void LlamaWorker::load(const QString &modelPath, QString mmprojPath, int nCtx) {
   }
 
   // =========================================================
-  // НОВАЯ ЛОГИКА: АВТОМАТИЧЕСКИЙ ПОИСК MTP DRAFT, ЕСЛИ ПУСТО
-  // =========================================================
-  // =========================================================
   // ЛОГИКА ВКЛЮЧЕНИЯ MTP (ВСТРОЕННЫЙ ИЛИ ВНЕШНИЙ)
   // =========================================================
   bool hasBuiltInMtp = MtpAutoDetect::modelHasMTP(modelPath);
@@ -770,17 +764,17 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
   if (!ensureLoaded())
     return;
 
-  // Пересоздаём сэмплер на каждый ход — настройки применяются сразу, без
-  // перезагрузки
-  if (sampler) {
+  // 1. Инициализация сэмплера
+  if (sampler)
     common_sampler_free(sampler);
-  }
+
   common_params_sampling samplingParams;
   samplingParams.temp = temperature;
   samplingParams.penalty_repeat = repeatPenalty;
   samplingParams.penalty_freq = frequencyPenalty;
   samplingParams.penalty_present = presencePenalty;
   samplingParams.samplers.clear();
+
   if (repeatPenalty != 1.0f || presencePenalty != 0.0f ||
       frequencyPenalty != 0.0f) {
     samplingParams.samplers.push_back(COMMON_SAMPLER_TYPE_PENALTIES);
@@ -788,237 +782,50 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
   samplingParams.samplers.push_back(COMMON_SAMPLER_TYPE_TEMPERATURE);
   sampler = common_sampler_init(model, samplingParams);
 
+  // 2. Подготовка состояния генерации
   std::string userText = prompt.toStdString();
-  bool hasImage = false;
-  mtmd_bitmap *bmp = nullptr;
-
-  if (!imagePath.isEmpty()) {
-    if (!mctx) {
-      emit generationError(QStringLiteral("mmproj is not loaded"));
-      return;
-    }
-
-    QImage img(imagePath);
-    if (img.isNull()) {
-      emit generationError(QStringLiteral("Cannot decode image"));
-      return;
-    }
-    QImage rgb = img.convertToFormat(QImage::Format_RGB888);
-    if (rgb.width() <= 0 || rgb.height() <= 0) {
-      emit generationError(QStringLiteral("Empty image"));
-      return;
-    }
-
-    // mtmd ждёт плотный буфер nx*ny*3 без выравнивания строк,
-    // а у QImage строки могут быть дополнены до кратности 4 — копируем
-    // построчно
-    const int w = rgb.width();
-    const int h = rgb.height();
-    std::vector<unsigned char> packed(static_cast<size_t>(w) * h * 3);
-    for (int y = 0; y < h; ++y) {
-      memcpy(packed.data() + static_cast<size_t>(y) * w * 3,
-             rgb.constScanLine(y), static_cast<size_t>(w) * 3);
-    }
-
-    // mtmd_bitmap_init копирует данные внутрь — packed можно не хранить
-    bmp = mtmd_bitmap_init(static_cast<uint32_t>(w), static_cast<uint32_t>(h),
-                           packed.data());
-    if (!bmp) {
-      emit generationError(QStringLiteral("Failed to create bitmap"));
-      return;
-    }
-    hasImage = true;
-  }
-
   history.emplace_back("user", userText);
-
   stopRequested.store(false);
 
   const int32_t nCtx = static_cast<int32_t>(llama_n_ctx(context));
-  llama_pos nextPos = usedTokens(context); // первая свободная позиция в памяти
-
+  llama_pos nextPos = usedTokens(context);
   int32_t nPromptTokens = 0;
   double promptSec = 0.0;
-  const std::string imageMarker =
-      mctx ? mtmd_get_marker(mctx) : mtmd_default_marker();
 
   const auto promptStart = std::chrono::steady_clock::now();
+  const auto genStart = std::chrono::steady_clock::now();
+
+  mtmd_bitmap *bmp = nullptr;
+  bool hasImage = !imagePath.isEmpty();
+
+  // 3. Обработка промпта (выбор ветки)
+  bool promptOk = false;
   if (hasImage) {
-    // маркер нужен только в промпте этого хода — добавили, применили, сняли
-    history.back().second += " ";
-    history.back().second += imageMarker;
-
-    const std::string formatted = buildPrompt();
-    // fprintf(stderr, "[prompt tail] ...%s\n[marker] %s\n",
-    //         formatted.substr(formatted.size() > 200 ? formatted.size() - 200
-    //         : 0).c_str(), imageMarker.c_str());
-
-    history.back().second = userText; // маркер из истории убрали
-    if (formatted.empty()) {
-      mtmd_bitmap_free(bmp);
-      emit generationError(QStringLiteral("Failed to build chat template"));
-      return;
-    }
-
-    const bool hasSystem =
-        !history.empty() && history.front().first == "system";
-    const bool firstTurn = (history.size() == (hasSystem ? 2u : 1u));
-    const bool addSpecial = firstTurn && formatted.rfind("<bos>", 0) != 0;
-
-    // mtmd_input_text text{formatted.c_str(), addSpecial,
-    // /*parse_special=*/true};
-    mtmd_input_text text{};
-    text.text = formatted.c_str();
-    text.text_len = formatted.size();
-    text.add_special = addSpecial;
-    text.parse_special = true;
-    mtmd_input_chunks *chunks = mtmd_input_chunks_init();
-    const mtmd_bitmap *bitmaps[1] = {bmp};
-    if (mtmd_tokenize(mctx, chunks, &text, bitmaps, 1) != 0) {
-      mtmd_bitmap_free(bmp);
-      mtmd_input_chunks_free(chunks);
-      emit generationError(QStringLiteral("mtmd_tokenize failed"));
-      return;
-    }
-    mtmd_bitmap_free(bmp); // данные уже скопированы в чанки
-
-    // Сколько контекста съест этот ход: текст + картинка (embd-токены)
-    size_t total = 0;
-    for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
-      total += mtmd_input_chunk_get_n_tokens(mtmd_input_chunks_get(chunks, i));
-    }
-    nPromptTokens = static_cast<int32_t>(total);
-    if (static_cast<int64_t>(total) + kMaxNewTokens > nCtx - kCtxReserve) {
-      mtmd_input_chunks_free(chunks);
-      emit generationError(
-          QStringLiteral("Prompt with image too long: %1 tokens, ctx %2")
-              .arg(total)
-              .arg(nCtx));
-      return;
-    }
-
-    llama_memory_clear(llama_get_memory(context), true);
-    llama_pos nPast = 0;
-    const int32_t nBatch = static_cast<int32_t>(llama_n_batch(context));
-    emit promptProgress(0);
-    if (mtmd_helper_eval_chunks(mctx, context, chunks, /*n_past=*/0,
-                                /*seq_id=*/0, nBatch, /*logits_last=*/true,
-                                &nPast) != 0) {
-      mtmd_input_chunks_free(chunks);
-      emit generationError(QStringLiteral("Image eval failed"));
-      return;
-    }
-    emit promptProgress(100);
-    nextPos = usedTokens(context); // позиция теперь за эмбеддингами картинки
-
-    double promptSec = std::chrono::duration<double>(
-                           std::chrono::steady_clock::now() - promptStart)
-                           .count();
-    int32_t freeCells =
-        static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
-    emit contextFree(freeCells);
-    mtmd_input_chunks_free(chunks);
-  } else { // Текстовая ветка
-
-    // Формируем промпт из всей истории; если он с запасом на ответ не влезает
-    // в контекст — выбрасываем самые старые реплики и пересобираем заново.
-    std::vector<llama_token> tokens;
-    while (true) {
-      const std::string formatted = buildPrompt();
-      if (formatted.empty()) {
-        emit generationError(QStringLiteral("Failed to build chat template"));
-        return;
-      }
-
-      const bool hasSystem =
-          !history.empty() && history.front().first == "system";
-      const bool firstTurn = (history.size() == (hasSystem ? 2u : 1u));
-      const bool addSpecial = firstTurn && formatted.rfind("<bos>", 0) != 0;
-
-      // Верхняя оценка: токенов не больше, чем байтов в UTF-8 (+пара на
-      // спец-токены)
-      tokens.resize(formatted.size() + 2);
-      int n = llama_tokenize(
-          vocab, formatted.c_str(), static_cast<int32_t>(formatted.size()),
-          tokens.data(), static_cast<int32_t>(tokens.size()), addSpecial, true);
-      if (n < 0) {
-        // Не хватило буфера: API сообщает требуемый размер со знаком минус
-        tokens.resize(static_cast<size_t>(-n));
-        n = llama_tokenize(vocab, formatted.c_str(),
-                           static_cast<int32_t>(formatted.size()),
-                           tokens.data(), static_cast<int32_t>(tokens.size()),
-                           addSpecial, true);
-        if (n < 0) {
-          emit generationError(QStringLiteral("Tokenization failed"));
-          return;
-        }
-      }
-      if (n == 0) {
-        emit generationError(QStringLiteral("Empty prompt after template"));
-        return;
-      }
-      tokens.resize(static_cast<size_t>(n));
-
-      const int64_t maxNew = kMaxNewTokens;
-      if (static_cast<int64_t>(n) + maxNew <= nCtx - kCtxReserve)
-        break; // влезает — работаем
-      if (history.size() <= 1) {
-        emit generationError(
-            QStringLiteral("Prompt too long: %1 tokens, ctx %2")
-                .arg(n)
-                .arg(nCtx));
-        return; // вместо decode через край
-      }
-      const size_t eraseFrom = (history.front().first == "system") ? 1 : 0;
-      history.erase(history.begin() + static_cast<long>(eraseFrom));
-    }
-
-    // Каждый ход начинаем «с чистого листа»: чистим KV-кэш и прогоняем
-    // всю историю заново. Проще и надёжнее, чем инкрементальный кэш, —
-    // оптимальность можно добавить позже.
-    llama_memory_clear(llama_get_memory(context), /*data=*/true);
-
-    // Промпт может быть длиннее n_batch — декодируем порциями.
-    const int32_t nBatch = static_cast<int32_t>(llama_n_batch(context));
-    const int32_t nTok = static_cast<int32_t>(tokens.size());
-    for (int32_t pos = 0; pos < nTok;) {
-      const int32_t chunk = std::min(nBatch, nTok - pos);
-      if (!decodeTokens(context, tokens.data() + pos, chunk, nextPos)) {
-        emit generationError(QStringLiteral("llama_process failed"));
-        return;
-      }
-      nextPos += chunk;
-      pos += chunk;
-      int percent = static_cast<int>((static_cast<double>(pos) / nTok) * 100.0);
-      emit promptProgress(percent);
-    }
-    emit promptProgress(100);
-    nPromptTokens = nTok;
-    promptSec = std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                              promptStart)
-                    .count();
-    int32_t freeCells =
-        static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
-    emit contextFree(freeCells);
+    promptOk = processImagePrompt(imagePath, userText, nCtx, nextPos,
+                                  nPromptTokens, promptSec, promptStart, bmp);
+  } else {
+    promptOk = processTextPrompt(userText, nCtx, nextPos, nPromptTokens,
+                                 promptSec, promptStart);
   }
 
+  if (!promptOk)
+    return; // Ошибка уже заэмитчена внутри функций
+
+  // 4. Цикл генерации
   std::string full;
-  std::string pending; // байты, ожидающие «досбора» UTF-8
-  channelHold.clear(); // хвост фильтра каналов с прошлого хода не нужен
-  const auto genStart = std::chrono::steady_clock::now();
+  std::string pending;
+  channelHold.clear();
   int nGen = 0;
-  // =========================================================
-  // ЦИКЛ ГЕНЕРАЦИИ С ПОДДЕРЖКОЙ SPECULATIVE DECODING
-  // =========================================================
+
   if (spec) {
-    // === SPECULATIVE DECODING BRANCH ===
+    // --- ВЕТКА SPECULATIVE DECODING ---
     qDebug() << "[SilverBrain] Using speculative decoding with MTP";
 
     llama_seq_id seq_id = 0;
     llama_token id_last = 0;
     llama_tokens prompt_tokens;
 
-    // Получаем последний токен промпта
+    // Получаем токены промпта для инициализации спекуляции
     {
       std::vector<llama_token> tokens;
       const std::string formatted = buildPrompt();
@@ -1033,263 +840,116 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
         }
       }
     }
+
     if (prompt_tokens.empty()) {
       emit generationError(
           QStringLiteral("Failed to prepare prompt for speculative decoding"));
       return;
     }
-    common_speculative_begin(spec, seq_id, prompt_tokens);
 
+    common_speculative_begin(spec, seq_id, prompt_tokens);
     llama_tokens draft;
     int n_past = static_cast<int>(prompt_tokens.size());
+    bool finish_requested = false;
     while (nGen < kMaxNewTokens && !stopRequested.load()) {
-      // Определяем максимальную длину драфта
-      int n_draft_max = nCtx - n_past - 2;
-      n_draft_max = std::max(n_draft_max, 0);
+      int n_draft_max = std::max(nCtx - n_past - 2, 0);
 
-      // Генерируем черновик
       common_speculative_get_draft_params(spec, seq_id) = {
-          /* .drafting = */ true,
-          /* .n_max = */ n_draft_max,
-          /* .pos0 = */ n_past,
-          /* .id_last = */ id_last,
-          /* .prompt = */ &prompt_tokens,
-          /* .result = */ &draft};
-
+          true, n_draft_max, n_past, id_last, &prompt_tokens, &draft};
       common_speculative_draft(spec);
 
       if (draft.empty()) {
-        // Если драфт пуст, используем обычную генерацию
+        // Fallback на обычную генерацию
         llama_token tok = common_sampler_sample(sampler, context, -1);
         common_sampler_accept(sampler, tok, true);
-        if (llama_vocab_is_eog(vocab, tok))
+
+        if (handleAcceptedToken(tok, full, pending, nGen))
           break;
 
-        char piece[512];
-        int n =
-            llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, false);
-        if (n > 0) {
-          pending.append(piece, n);
-          const QString text = takeDecodableUtf8(pending);
-          if (!text.isEmpty()) {
-            const QString clean = stripChannels(channelHold, text);
-            if (!clean.isEmpty()) {
-              full += clean.toStdString();
-              emit tokenReceived(clean);
-            }
-          }
-        }
         if (!decodeTokens(context, &tok, 1, nextPos)) {
           emit generationError(QStringLiteral("llama_process failed"));
           return;
         }
         ++nextPos;
-        ++nGen;
         id_last = tok;
         prompt_tokens.push_back(tok);
         ++n_past;
+        emitGenerationStats(nGen, genStart);
         continue;
       }
 
-      // Верифицируем драфт целевой моделью
-      // Используем common_batch, так как он корректно управляет индексами для
-      // спекуляции
+      // Верификация драфта
       common_batch batch_tgt(context);
-
-      // Добавляем id_last (индекс 0)
       batch_tgt.add(id_last, n_past, seq_id, true);
-
-      // Добавляем токены драфта (индексы 1, 2, ..., draft.size())
       for (size_t i = 0; i < draft.size(); ++i) {
         batch_tgt.add(draft[i], n_past + 1 + static_cast<int>(i), seq_id, true);
       }
 
-      // Прогоняем батч через основную модель
       if (llama_process(context, LLAMA_PROCESS_TYPE_DECODE, batch_tgt.get()) !=
           0) {
         emit generationError(QStringLiteral("Speculative verification failed"));
         return;
       }
-      // ФОРМИРОВАНИЕ idxs:
-      // Нам нужны логиты для id_last (индекс 0) и для каждого токена драфта.
-      // Всего элементов: 1 + draft.size()
+
       std::vector<int> idxs;
       idxs.reserve(draft.size() + 1);
-      for (size_t i = 0; i <= draft.size(); ++i) {
+      for (size_t i = 0; i <= draft.size(); ++i)
         idxs.push_back(static_cast<int>(i));
-      }
-      // 4. Сэмплируем и принимаем токены
-      // grammar_first обычно false, если у вас нет строгого GBNF grammar,
-      // который нужно форсировать std::vector<llama_token>
-      // common_sampler_sample_and_accept_n(struct common_sampler * gsmpl,
-      // struct llama_context * ctx, const std::vector<int> & idxs, const
-      // llama_tokens & draft, bool grammar_first = false);
+
       auto accepted_ids = common_sampler_sample_and_accept_n(
           sampler, context, idxs, draft, false);
-
       if (accepted_ids.empty()) {
         emit generationError(
             QStringLiteral("No tokens accepted in speculative step"));
         return;
       }
 
-      // 5. Обрабатываем принятые токены
+      // Обработка принятых токенов
       for (size_t i = 0; i < accepted_ids.size(); ++i) {
         llama_token tok = accepted_ids[i];
-
-        // Все токены, кроме последнего в accepted_ids, - это принятый драфт
         if (i < accepted_ids.size() - 1) {
-          char piece[512];
-          int n =
-              llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, false);
-          if (n > 0) {
-            pending.append(piece, n);
-            const QString text = takeDecodableUtf8(pending);
-            if (!text.isEmpty()) {
-              const QString clean = stripChannels(channelHold, text);
-              if (!clean.isEmpty()) {
-                full += clean.toStdString();
-                emit tokenReceived(clean);
-              }
-            }
+          if (handleAcceptedToken(tok, full, pending, nGen)) {
+            finish_requested = true;
+            break;
           }
-          ++nGen;
           prompt_tokens.push_back(tok);
           ++n_past;
         } else {
-          // Последний токен - это новый "id_last", сгенерированный целевой
-          // моделью
           id_last = tok;
         }
-
-        if (llama_vocab_is_eog(vocab, tok)) {
-          goto done; // Выход из цикла генерации
-        }
       }
-
-      // Очищаем драфт, так как он был потреблен (или частично отклонен, но
-      // common_sampler это учел)
       draft.clear();
-
-      // Обновление статистики (как в вашем оригинальном коде)
-      if ((nGen & 15) == 0) {
-        const double sec = std::chrono::duration<double>(
-                               std::chrono::steady_clock::now() - genStart)
-                               .count();
-        if (sec > 0.05)
-          emit genSpeed(nGen / sec);
-        emit contextFree(static_cast<int32_t>(llama_n_ctx(context)) -
-                         usedTokens(context));
-        emit tokensGenerated(nGen);
-      }
+      emitGenerationStats(nGen, genStart);
+      if (finish_requested)
+        break;
     }
-
-    // Обновляем статистику каждые 16 токенов
-    if ((nGen & 15) == 0) {
-      const double sec = std::chrono::duration<double>(
-                             std::chrono::steady_clock::now() - genStart)
-                             .count();
-      if (sec > 0.05)
-        emit genSpeed(nGen / sec);
-      emit contextFree(static_cast<int32_t>(llama_n_ctx(context)) -
-                       usedTokens(context));
-      emit tokensGenerated(nGen);
-    }
-  done:
     qDebug() << "[SilverBrain] Speculative decoding completed. Generated"
              << nGen << "tokens";
   } else {
+    // --- ВЕТКА ОБЫЧНОЙ ГЕНЕРАЦИИ ---
     for (int i = 0; i < kMaxNewTokens; ++i) {
       if (stopRequested.load()) {
         stopRequested.store(false);
         break;
       }
+
       llama_token tok = common_sampler_sample(sampler, context, -1);
       common_sampler_accept(sampler, tok, true);
-      if (llama_vocab_is_eog(vocab, tok))
+
+      if (handleAcceptedToken(tok, full, pending, nGen))
         break;
-
-      char piece[512];
-      int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, false);
-
-      // === /РЕЖИМ РЕНТГЕНА ===
-      if (n > 0) {
-        pending.append(piece, n);
-        const QString text = takeDecodableUtf8(pending);
-        if (!text.isEmpty()) {
-          const QString clean = stripChannels(channelHold, text);
-          // Печатаем, что осталось после очистки
-          if (clean.isEmpty() && !text.isEmpty()) {
-            fprintf(stderr,
-                    "[DEBUG STRIPPED] Text was eaten by stripChannels: '%s'\n",
-                    text.toStdString().c_str());
-          }
-          if (!clean.isEmpty()) {
-            full += clean.toStdString();
-            emit tokenReceived(clean);
-          }
-        }
-      }
-      ++nGen;
-      if ((nGen & 15) == 0) { // каждые 16 токенов — не спамим сигналами
-        const double sec = std::chrono::duration<double>(
-                               std::chrono::steady_clock::now() - genStart)
-                               .count();
-        if (sec > 0.05)
-          emit genSpeed(nGen / sec);
-        emit contextFree(static_cast<int32_t>(llama_n_ctx(context)) -
-                         usedTokens(context));
-        emit tokensGenerated(nGen);
-      }
 
       if (!decodeTokens(context, &tok, 1, nextPos)) {
         emit generationError(QStringLiteral("llama_process failed"));
         return;
       }
       ++nextPos;
+      emitGenerationStats(nGen, genStart);
     }
-
-    // Хвост недобранных байтов: отдаём как есть (редкий случай обрыва посреди
-    // символа)
-    if (!pending.empty()) {
-      full +=
-          QString::fromUtf8(pending.data(), static_cast<int>(pending.size()))
-              .toStdString();
-    }
-
-    // ← ВОТ СЮДА: досбор хвоста из stripChannels и добивка full
-    if (!channelHold.empty()) {
-      const QString tail = stripChannels(channelHold, QString());
-      if (!tail.isEmpty())
-        full += tail.toStdString();
-    }
-
-    history.emplace_back("assistant", full);
-
-    // Рассчитываем финальные метрики
-    const double genSec = std::chrono::duration<double>(
-                              std::chrono::steady_clock::now() - genStart)
-                              .count();
-    const double tps = genSec > 0 ? nGen / genSec : 0.0;
-    const int32_t freeFinal =
-        static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
-
-    emit contextFree(freeFinal); // Обновляем UI в последний раз
-
-    // Формируем понятную строку для истории и UI
-    char statLine[256];
-    snprintf(statLine, sizeof(statLine),
-             "📊 Statistics: Generated %d tokens | Average speed: %.1f "
-             "tokens/s | Context remaining: %d tokens.",
-             nGen, tps, freeFinal);
-
-    // Добавляем в историю диалога (это гарантирует сохранение при Save ctx)
-    history.emplace_back("stats", statLine);
-
-    // Отправляем в QML для немедленного отображения
-    emit statsAppended(QString::fromUtf8(statLine));
-    emit generationFinished(QString::fromStdString(full));
   }
+
+  // 5. Финализация
+  finalizeGeneration(full, pending, nGen, genStart);
 }
 
 bool LlamaWorker::saveHistory(const QString &path) {
@@ -1428,6 +1088,280 @@ void LlamaWorker::unload() {
 
   emit modelUnloaded(); // Сигнал в QML, что можно обновить UI (например, скрыть
                         // кнопку "Загрузить изображение")
+}
+
+bool LlamaWorker::processImagePrompt(
+    const QString &imagePath, const std::string &userText, int32_t nCtx,
+    llama_pos &nextPos, int32_t &nPromptTokens, double &promptSec,
+    const std::chrono::steady_clock::time_point &promptStart,
+    mtmd_bitmap *&bmp) {
+  if (!mctx) {
+    emit generationError(QStringLiteral("mmproj is not loaded"));
+    return false;
+  }
+
+  QImage img(imagePath);
+  if (img.isNull()) {
+    emit generationError(QStringLiteral("Cannot decode image"));
+    return false;
+  }
+
+  QImage rgb = img.convertToFormat(QImage::Format_RGB888);
+  if (rgb.width() <= 0 || rgb.height() <= 0) {
+    emit generationError(QStringLiteral("Empty image"));
+    return false;
+  }
+
+  const int w = rgb.width();
+  const int h = rgb.height();
+  std::vector<unsigned char> packed(static_cast<size_t>(w) * h * 3);
+  for (int y = 0; y < h; ++y) {
+    memcpy(packed.data() + static_cast<size_t>(y) * w * 3, rgb.constScanLine(y),
+           static_cast<size_t>(w) * 3);
+  }
+
+  bmp = mtmd_bitmap_init(static_cast<uint32_t>(w), static_cast<uint32_t>(h),
+                         packed.data());
+  if (!bmp) {
+    emit generationError(QStringLiteral("Failed to create bitmap"));
+    return false;
+  }
+
+  history.back().second += " " + std::string(mtmd_get_marker(mctx));
+  const std::string formatted = buildPrompt();
+  history.back().second = userText; // маркер из истории убрали
+
+  if (formatted.empty()) {
+    mtmd_bitmap_free(bmp);
+    bmp = nullptr;
+    emit generationError(QStringLiteral("Failed to build chat template"));
+    return false;
+  }
+
+  const bool hasSystem = !history.empty() && history.front().first == "system";
+  const bool firstTurn = (history.size() == (hasSystem ? 2u : 1u));
+  const bool addSpecial = firstTurn && formatted.rfind("<bos>", 0) != 0;
+
+  mtmd_input_text text{};
+  text.text = formatted.c_str();
+  text.text_len = formatted.size();
+  text.add_special = addSpecial;
+  text.parse_special = true;
+
+  mtmd_input_chunks *chunks = mtmd_input_chunks_init();
+  const mtmd_bitmap *bitmaps[1] = {bmp};
+
+  if (mtmd_tokenize(mctx, chunks, &text, bitmaps, 1) != 0) {
+    mtmd_bitmap_free(bmp);
+    bmp = nullptr;
+    mtmd_input_chunks_free(chunks);
+    emit generationError(QStringLiteral("mtmd_tokenize failed"));
+    return false;
+  }
+
+  mtmd_bitmap_free(bmp);
+  bmp = nullptr; // данные уже скопированы в чанки
+
+  size_t total = 0;
+  for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
+    total += mtmd_input_chunk_get_n_tokens(mtmd_input_chunks_get(chunks, i));
+  }
+
+  nPromptTokens = static_cast<int32_t>(total);
+  if (static_cast<int64_t>(total) + kMaxNewTokens > nCtx - kCtxReserve) {
+    mtmd_input_chunks_free(chunks);
+    emit generationError(
+        QStringLiteral("Prompt with image too long: %1 tokens, ctx %2")
+            .arg(total)
+            .arg(nCtx));
+    return false;
+  }
+
+  llama_memory_clear(llama_get_memory(context), true);
+  llama_pos nPast = 0;
+  const int32_t nBatch = static_cast<int32_t>(llama_n_batch(context));
+
+  emit promptProgress(0);
+  if (mtmd_helper_eval_chunks(mctx, context, chunks, 0, 0, nBatch, true,
+                              &nPast) != 0) {
+    mtmd_input_chunks_free(chunks);
+    emit generationError(QStringLiteral("Image eval failed"));
+    return false;
+  }
+
+  emit promptProgress(100);
+  nextPos = usedTokens(context);
+  promptSec = std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                            promptStart)
+                  .count();
+
+  int32_t freeCells =
+      static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
+  emit contextFree(freeCells);
+  mtmd_input_chunks_free(chunks);
+
+  return true;
+}
+
+bool LlamaWorker::processTextPrompt(
+    const std::string &userText, int32_t nCtx, llama_pos &nextPos,
+    int32_t &nPromptTokens, double &promptSec,
+    const std::chrono::steady_clock::time_point &promptStart) {
+  std::vector<llama_token> tokens;
+  while (true) {
+    const std::string formatted = buildPrompt();
+    if (formatted.empty()) {
+      emit generationError(QStringLiteral("Failed to build chat template"));
+      return false;
+    }
+
+    const bool hasSystem =
+        !history.empty() && history.front().first == "system";
+    const bool firstTurn = (history.size() == (hasSystem ? 2u : 1u));
+    const bool addSpecial = firstTurn && formatted.rfind("<bos>", 0) != 0;
+
+    tokens.resize(formatted.size() + 2);
+    int n = llama_tokenize(
+        vocab, formatted.c_str(), static_cast<int32_t>(formatted.size()),
+        tokens.data(), static_cast<int32_t>(tokens.size()), addSpecial, true);
+
+    if (n < 0) {
+      tokens.resize(static_cast<size_t>(-n));
+      n = llama_tokenize(vocab, formatted.c_str(),
+                         static_cast<int32_t>(formatted.size()), tokens.data(),
+                         static_cast<int32_t>(tokens.size()), addSpecial, true);
+      if (n < 0) {
+        emit generationError(QStringLiteral("Tokenization failed"));
+        return false;
+      }
+    }
+
+    if (n == 0) {
+      emit generationError(QStringLiteral("Empty prompt after template"));
+      return false;
+    }
+
+    tokens.resize(static_cast<size_t>(n));
+    const int64_t maxNew = kMaxNewTokens;
+
+    if (static_cast<int64_t>(n) + maxNew <= nCtx - kCtxReserve)
+      break;
+
+    if (history.size() <= 1) {
+      emit generationError(QStringLiteral("Prompt too long: %1 tokens, ctx %2")
+                               .arg(n)
+                               .arg(nCtx));
+      return false;
+    }
+
+    const size_t eraseFrom = (history.front().first == "system") ? 1 : 0;
+    history.erase(history.begin() + static_cast<long>(eraseFrom));
+  }
+
+  llama_memory_clear(llama_get_memory(context), true);
+  const int32_t nBatch = static_cast<int32_t>(llama_n_batch(context));
+  const int32_t nTok = static_cast<int32_t>(tokens.size());
+
+  for (int32_t pos = 0; pos < nTok;) {
+    const int32_t chunk = std::min(nBatch, nTok - pos);
+    if (!decodeTokens(context, tokens.data() + pos, chunk, nextPos)) {
+      emit generationError(QStringLiteral("llama_process failed"));
+      return false;
+    }
+    nextPos += chunk;
+    pos += chunk;
+    emit promptProgress(
+        static_cast<int>((static_cast<double>(pos) / nTok) * 100.0));
+  }
+
+  emit promptProgress(100);
+  nPromptTokens = nTok;
+  promptSec = std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                            promptStart)
+                  .count();
+
+  int32_t freeCells =
+      static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
+  emit contextFree(freeCells);
+
+  return true;
+}
+
+bool LlamaWorker::handleAcceptedToken(llama_token tok, std::string &full,
+                                      std::string &pending, int &nGen) {
+  char piece[512];
+  int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, false);
+
+  if (n > 0) {
+    pending.append(piece, n);
+    const QString text = takeDecodableUtf8(pending);
+    if (!text.isEmpty()) {
+      const QString clean = stripChannels(channelHold, text);
+      if (clean.isEmpty() && !text.isEmpty()) {
+        fprintf(stderr,
+                "[DEBUG STRIPPED] Text was eaten by stripChannels: '%s'\n",
+                text.toStdString().c_str());
+      }
+      if (!clean.isEmpty()) {
+        full += clean.toStdString();
+        emit tokenReceived(clean);
+      }
+    }
+  }
+
+  ++nGen;
+  return llama_vocab_is_eog(vocab, tok);
+}
+
+void LlamaWorker::emitGenerationStats(
+    int nGen, const std::chrono::steady_clock::time_point &genStart) {
+  if ((nGen & 15) == 0) {
+    const double sec = std::chrono::duration<double>(
+                           std::chrono::steady_clock::now() - genStart)
+                           .count();
+    if (sec > 0.05) {
+      emit genSpeed(nGen / sec);
+    }
+    emit contextFree(static_cast<int32_t>(llama_n_ctx(context)) -
+                     usedTokens(context));
+    emit tokensGenerated(nGen);
+  }
+}
+
+void LlamaWorker::finalizeGeneration(
+    std::string &full, std::string &pending, int nGen,
+    const std::chrono::steady_clock::time_point &genStart) {
+  if (!pending.empty()) {
+    full += QString::fromUtf8(pending.data(), static_cast<int>(pending.size()))
+                .toStdString();
+  }
+  if (!channelHold.empty()) {
+    const QString tail = stripChannels(channelHold, QString());
+    if (!tail.isEmpty()) {
+      full += tail.toStdString();
+    }
+  }
+
+  history.emplace_back("assistant", full);
+
+  const double genSec =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - genStart)
+          .count();
+  const double tps = genSec > 0 ? nGen / genSec : 0.0;
+  const int32_t freeFinal =
+      static_cast<int32_t>(llama_n_ctx(context)) - usedTokens(context);
+
+  emit contextFree(freeFinal);
+
+  char statLine[256];
+  snprintf(statLine, sizeof(statLine),
+           "📊 Statistics: Generated %d tokens | Average speed: %.1f tokens/s "
+           "| Context remaining: %d tokens.",
+           nGen, tps, freeFinal);
+
+  history.emplace_back("stats", statLine);
+  emit statsAppended(QString::fromUtf8(statLine));
+  emit generationFinished(QString::fromStdString(full));
 }
 
 // ============================ LlamaEngine ==================================
