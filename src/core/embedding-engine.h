@@ -1,62 +1,63 @@
 // src/core/embedding-engine.h
 #pragma once
 
-#include <QObject>
-#include <QThread>
-#include <QString>
-#include <vector>
 #include "llama.h"
+#include <QObject>
+#include <QString>
+#include <QThread>
+#include <vector>
 
 class EmbeddingWorker : public QObject {
-    Q_OBJECT
+  Q_OBJECT
 public:
-    ~EmbeddingWorker() override;
-    
+  ~EmbeddingWorker() override;
+
 public slots:
-    void load(const QString& modelPath);
-    void unload();
-    std::vector<float> encode(const QString& text);
-    int dimensions() const { return m_dims; } 
-    
+  void load(const QString &modelPath);
+  void unload();
+  std::vector<float> encode(const QString &text);
+  int dimensions() const { return m_dims; }
+
 signals:
-    void modelLoaded(bool ok, const QString& error);
-    void modelUnloaded();
-    
+  void modelLoaded(bool ok, const QString &error);
+  void modelUnloaded();
+
 private:
-    void releaseModel();
-    llama_model* m_model = nullptr;
-    llama_context* m_ctx = nullptr;
-    const llama_vocab* m_vocab = nullptr;
-    int m_dims = 0;
-    int m_nCtx = 0;
-    bool decodeTokens(llama_context *ctx, const llama_token *tokens, int32_t n, llama_pos firstPos);
+  void releaseModel();
+  llama_model *m_model = nullptr;
+  llama_context *m_ctx = nullptr;
+  const llama_vocab *m_vocab = nullptr;
+  int m_dims = 0;
+  int m_nCtx = 0;
+  bool decodeTokens(llama_context *ctx, const llama_token *tokens, int32_t n,
+                    llama_pos firstPos);
 };
 
 class EmbeddingEngine : public QObject {
-    Q_OBJECT
-    Q_PROPERTY(bool loaded READ loaded NOTIFY loadedChanged)
-    
+  Q_OBJECT
+  Q_PROPERTY(bool loaded READ loaded NOTIFY loadedChanged)
+
 public:
-    explicit EmbeddingEngine(QObject* parent = nullptr);
-    ~EmbeddingEngine() override;
-    
-    Q_INVOKABLE void loadModel(const QString& modelPath);
-    bool unloadModel();
-    std::vector<float> encode(const QString& text);  // блокирующий вызов
-    int dimensions() const;
-    bool loaded() const { return m_loaded; }
-    
+  explicit EmbeddingEngine(QObject *parent = nullptr);
+  ~EmbeddingEngine() override;
+
+  Q_INVOKABLE void loadModel(const QString &modelPath);
+  bool unloadModel();
+  std::vector<float> encode(const QString &text); // блокирующий вызов
+  int dimensions() const;
+  bool loaded() const { return m_loaded; }
+
 signals:
-    void modelLoaded(bool ok, const QString& error);
-    void loadedChanged();
-    void loadModelRequested(const QString& modelPath);
-    
+  void modelLoaded(bool ok, const QString &error);
+  void loadedChanged();
+  void loadModelRequested(const QString &modelPath);
+
 private slots:
-    void onModelLoaded(bool ok, const QString& error);
-    void onModelUnloaded();
-    
+  void onModelLoaded(bool ok, const QString &error);
+  void onModelUnloaded();
+
 private:
-    QThread m_thread;
-    EmbeddingWorker* m_worker = nullptr;
-    bool m_loaded = false;
+  QThread m_thread;
+  EmbeddingWorker *m_worker = nullptr;
+  bool m_loaded = false;
 };
