@@ -42,8 +42,11 @@ constexpr const char *kGemmaTemplate =
     "{% endif %}{% endfor %}"
     "{% if add_generation_prompt %}{{ '<start_of_turn>model\\n' }}{% endif %}";
 
-constexpr std::string_view kChannelTags[] = {"<|channel>thought", "<|channel>",
-                                             "<channel|>"};
+// constexpr std::string_view kChannelTags[] = {"<|channel>thought",
+// "<|channel>",
+//                                              "<channel|>"};
+constexpr std::string_view kChannelTags[] = {"<|channel|>", "<|im_start|>",
+                                             "<|im_end|>", "<|im_sep|>"};
 
 // Fallback ChatML: общий формат для Qwen/GLM/Yi и прочих, если шаблон
 // из GGUF не применился. Gemma-шаблон не годится как замена: чужие
@@ -705,23 +708,38 @@ std::string LlamaWorker::buildPrompt() const {
   std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
                  ::tolower);
 
-  // 2. Логика выбора шаблона
+  // // 2. Логика выбора шаблона
   bool isQwenFamily = (lowerName.find("qwen") != std::string::npos ||
                        lowerName.find("qwythos") != std::string::npos);
 
-  if (isQwenFamily) {
-    // Для Qwen/Qwythos принудительно используем проверенный ChatML.
-    // Это обходит проблему сломанных/нестандартных шаблонов в кастомных GGUF.
-    tmpl = kChatMLTemplate;
+  // if (isQwenFamily) {
+  //   // Для Qwen/Qwythos принудительно используем проверенный ChatML.
+  //   // Это обходит проблему сломанных/нестандартных шаблонов в кастомных
+  //   GGUF. tmpl = kChatMLTemplate;
+  // } else {
+  //   // Для остальных (например, Gemma) пробуем шаблон из метаданных GGUF
+  //   if (llama_model_meta_val_str(model, "tokenizer.chat_template",
+  //   buf.data(),
+  //                                buf.size()) > 0) {
+  //     tmpl = buf.data();
+  //   } else {
+  //     tmpl = kChatMLTemplate; // Фолбэк по умолчанию
+  //   }
+  // }
+
+  if (llama_model_meta_val_str(model, "tokenizer.chat_template", buf.data(),
+                               buf.size()) > 0) {
+    tmpl = buf.data();
   } else {
-    // Для остальных (например, Gemma) пробуем шаблон из метаданных GGUF
-    if (llama_model_meta_val_str(model, "tokenizer.chat_template", buf.data(),
-                                 buf.size()) > 0) {
-      tmpl = buf.data();
-    } else {
-      tmpl = kChatMLTemplate; // Фолбэк по умолчанию
-    }
+    tmpl = kChatMLTemplate;
   }
+  qDebug().noquote() << "[ChatTemplate] Full template:\n"
+                     << QString::fromUtf8(tmpl);
+  qDebug().noquote() << "[ChatTemplate] Source:"
+                     << (isQwenFamily ? "forced ChatML" : "GGUF/fallback")
+                     << "\n[ChatTemplate] Length:" << strlen(tmpl)
+                     << "\n[ChatTemplate] Full template:\n"
+                     << QString::fromUtf8(tmpl);
 
   // 3. Пробуем применить выбранный шаблон
   int32_t n = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true,
@@ -927,27 +945,45 @@ void LlamaWorker::generateAsync(const QString &prompt, const QString &imagePath,
              << nGen << "tokens";
   } else {
     // --- ВЕТКА ОБЫЧНОЙ ГЕНЕРАЦИИ ---
+    bool finish_requested = false;
     for (int i = 0; i < kMaxNewTokens; ++i) {
       if (stopRequested.load()) {
         stopRequested.store(false);
+        finish_requested = true;
         break;
       }
 
       llama_token tok = common_sampler_sample(sampler, context, -1);
       common_sampler_accept(sampler, tok, true);
 
-      if (handleAcceptedToken(tok, full, pending, nGen))
+      if (handleAcceptedToken(tok, full, pending, nGen)) {
+        finish_requested = true;
         break;
+      }
 
       if (!decodeTokens(context, &tok, 1, nextPos)) {
         emit generationError(QStringLiteral("llama_process failed"));
+        finish_requested = true;
         return;
       }
       ++nextPos;
       emitGenerationStats(nGen, genStart);
     }
-  }
+    if (finish_requested) {
+      qDebug() << "[SilverBrain] Generation finished by user request or error.";
+    } else {
+      qDebug()
+          << "[SilverBrain] Generation finished after reaching max tokens.";
+      const QString fallback = QStringLiteral("\n\nSorry, I don't know.");
 
+      full += "\n</think>";
+      full += fallback.toStdString();
+
+      think = false;
+      emit tokenReceived(fallback);
+    }
+  }
+  qDebug() << "[DEBUG FINAL FULL]" << QString::fromStdString(full);
   // 5. Финализация
   finalizeGeneration(full, pending, nGen, genStart);
 }
@@ -1295,16 +1331,42 @@ bool LlamaWorker::handleAcceptedToken(llama_token tok, std::string &full,
   if (n > 0) {
     pending.append(piece, n);
     const QString text = takeDecodableUtf8(pending);
-    if (!text.isEmpty()) {
-      const QString clean = stripChannels(channelHold, text);
-      if (clean.isEmpty() && !text.isEmpty()) {
-        fprintf(stderr,
-                "[DEBUG STRIPPED] Text was eaten by stripChannels: '%s'\n",
-                text.toStdString().c_str());
+    const QString clean = stripChannels(channelHold, text);
+    if (clean.isEmpty() && !text.isEmpty()) {
+      fprintf(stderr,
+              "[DEBUG STRIPPED] Text was eaten by stripChannels: '%s'\n",
+              text.toStdString().c_str());
+    }
+    if (!clean.isEmpty()) {
+      qDebug() << "[DEBUG] Decoded text:" << clean;
+      QString remaining = clean;
+
+      while (!remaining.isEmpty()) {
+        const QString marker = think ? "</think>" : "<think>";
+        const int pos = remaining.indexOf(marker);
+
+        if (pos < 0) {
+          if (think)
+            emit reasoningReceived(remaining);
+          else
+            emit tokenReceived(remaining);
+          break;
+        }
+
+        const QString before = remaining.left(pos);
+        if (!before.isEmpty()) {
+          if (think)
+            emit reasoningReceived(before);
+          else
+            emit tokenReceived(before);
+        }
+
+        remaining.remove(0, pos + marker.size());
+        think = !think;
       }
+
       if (!clean.isEmpty()) {
         full += clean.toStdString();
-        emit tokenReceived(clean);
       }
     }
   }
@@ -1389,6 +1451,8 @@ LlamaEngine::LlamaEngine(QObject *parent) : QObject(parent) {
           &LlamaEngine::onWorkFinished);
   connect(m_worker, &LlamaWorker::tokenReceived, this,
           &LlamaEngine::tokenReceived);
+  connect(m_worker, &LlamaWorker::reasoningReceived, this,
+          &LlamaEngine::reasoningReceived);
   connect(m_worker, &LlamaWorker::generationFinished, this,
           &LlamaEngine::generationFinished);
   connect(m_worker, &LlamaWorker::generationFinished, this,

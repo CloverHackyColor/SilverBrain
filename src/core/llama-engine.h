@@ -59,6 +59,7 @@ signals:
   void modelLoaded(bool ok, const QString &error);
   void modelUnloaded();
   void tokenReceived(const QString &piece); // стриминг по токенам
+  void reasoningReceived(const QString &piece);
   void generationFinished(const QString &fullText);
   void generationError(const QString &message);
   void loadProgress(float progress);
@@ -122,8 +123,11 @@ private:
   std::vector<std::pair<std::string, std::string>> history; // role, content
 
   // Лимит генерации за один ход и запас под ответ в контексте.
-  static constexpr int kMaxNewTokens = 1024;
+  static constexpr int kMaxNewTokens = 2048;
   static constexpr int kCtxReserve = 8;
+
+  bool think = false; // Флаг, что модель «думает», этот текст должен
+                      // отправляться в reasoning
 
   // Спекулятивная декодировка: хранит состояние между вызовами generateAsync()
   struct common_speculative *spec = nullptr;
@@ -226,6 +230,7 @@ signals:
   void modelLoaded(bool ok, const QString &error);
   void modelUnloaded();
   void tokenReceived(const QString &piece);
+  void reasoningReceived(const QString &piece);
   void generationFinished(const QString &fullText);
   void generationError(const QString &message);
   void busyChanged();

@@ -13,6 +13,8 @@ SilverBrainEngine::SilverBrainEngine(LlamaEngine *llm, EmbeddingEngine *emb,
           &SilverBrainEngine::onLlmModelLoaded);
   connect(m_llm, &LlamaEngine::tokenReceived, this,
           &SilverBrainEngine::tokenReceived);
+  connect(m_llm, &LlamaEngine::reasoningReceived, this,
+          &SilverBrainEngine::reasoningReceived);
   connect(m_llm, &LlamaEngine::generationFinished, this,
           &SilverBrainEngine::generationFinished);
   connect(m_llm, &LlamaEngine::generationError, this,

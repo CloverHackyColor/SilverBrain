@@ -92,6 +92,7 @@ signals:
   // Проксирование сигналов LlamaEngine
   void modelLoaded(bool ok, const QString &error);
   void tokenReceived(const QString &piece);
+  void reasoningReceived(const QString &piece);
   void tokensGenerated(int count);
   void generationFinished(const QString &fullText);
   void generationError(const QString &message);

@@ -9,6 +9,7 @@
 struct ChatMessage {
   QString role;
   QString text;
+  QString reasoning; // рассуждения модели (для отладки)
 };
 
 class ChatModel : public QAbstractListModel {
@@ -18,7 +19,8 @@ class ChatModel : public QAbstractListModel {
 public:
   enum Roles {
     RoleRole = Qt::UserRole + 1, // кто говорит
-    TextRole                     // текст сообщения
+    TextRole,                    // текст сообщения
+    ReasoningRole
   };
 
   explicit ChatModel(QObject *parent = nullptr);
@@ -33,6 +35,7 @@ public:
   // --- QML API ---
   Q_INVOKABLE void addMessage(const QString &role, const QString &text);
   Q_INVOKABLE void appendToLast(const QString &piece); // для стриминга
+  Q_INVOKABLE void appendReasoningToLast(const QString &piece);
   Q_INVOKABLE void clear();
 
 signals:

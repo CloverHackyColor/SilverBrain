@@ -38,6 +38,7 @@ if(APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-const-variable -Wno-unused-function")
 endif()
 
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
 add_subdirectory(third_party/llama.cpp)
 # tree-sitter
 add_subdirectory(third_party/tree-sitter)

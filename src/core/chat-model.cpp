@@ -16,12 +16,16 @@ QVariant ChatModel::data(const QModelIndex &index, int role) const {
     return msg.role;
   case TextRole:
     return msg.text;
+  case ReasoningRole:
+    return msg.reasoning;
+  default:
+    break;
   }
   return {};
 }
 
 QHash<int, QByteArray> ChatModel::roleNames() const {
-  return {{RoleRole, "role"}, {TextRole, "text"}};
+  return {{RoleRole, "role"}, {TextRole, "text"}, {ReasoningRole, "reasoning"}};
 }
 
 bool ChatModel::empty() const { return m_messages.empty(); }
@@ -41,6 +45,16 @@ void ChatModel::appendToLast(const QString &piece) {
   m_messages.back().text += piece;
   const QModelIndex idx = index(static_cast<int>(m_messages.size()) - 1);
   emit dataChanged(idx, idx, {TextRole});
+}
+
+void ChatModel::appendReasoningToLast(const QString &piece) {
+  if (m_messages.empty())
+    return;
+
+  m_messages.back().reasoning += piece;
+
+  const QModelIndex idx = index(static_cast<int>(m_messages.size() - 1));
+  emit dataChanged(idx, idx, {ReasoningRole});
 }
 
 void ChatModel::clear() {

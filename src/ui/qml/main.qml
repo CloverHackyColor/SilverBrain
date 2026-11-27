@@ -94,14 +94,8 @@ ApplicationWindow {
                 //currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
                 folder: Qt.resolvedUrl(StandardPaths.writableLocation(StandardPaths.DocumentsLocation))
                 onAccepted: {
-
-                  //  var fileProp = (typeof selectedFile !== 'undefined') ? selectedFile : file;
-                  //  var path = getLocalPath(fileProp);
-                 //   silverBrain.saveHistoryAs(path)
-
                     silverBrain.saveHistoryAs(currentFile)
                     console.log("Saving history to:", currentFile)
-
                 }
             }
             FileDialog {
@@ -112,10 +106,6 @@ ApplicationWindow {
                 //currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
                 folder: Qt.resolvedUrl(StandardPaths.writableLocation(StandardPaths.DocumentsLocation))
                 onAccepted: {
-
-                //    var fileProp = (typeof selectedFile !== 'undefined') ? selectedFile : file;
-                //    var path = getLocalPath(fileProp);
-
                     silverBrain.loadHistoryFrom(currentFile)
                     console.log("Load history from:", currentFile)
                 }
@@ -255,26 +245,13 @@ ApplicationWindow {
                         onAccepted: {
                             // currentFile — локальный URL выбранного файла
 
-/*                            var path = file.toString()
-                            if (path.startsWith("file://")) // срезаем "file://" (на маке один слэш)
-                                path = decodeURIComponent(path.substring(7))                       
-
-                            //var path = currentFile.toLocalFile()
-                        //    if (path.startsWith("file://"))
-                        //        path = decodeURIComponent(path.substring(7))   // срезаем "file://" (на маке один слэш)
-                            var path = localPath(currentFile)
-
-                            selectedModelPath = path
-                            modelPathField.text = path.substring(
-                                Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1)
- */
                             // Используем selectedFile (Qt6) или file (Qt5.15) через нашу функцию
                             var fileProp = (typeof selectedFile !== 'undefined') ? selectedFile : file;
                             var path = getLocalPath(fileProp);
                             
                             selectedModelPath = path;
                             // Берем только имя файла для отображения в поле
-                            var fileName = path.substring(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\") + 1));
+                            var fileName = path.substring(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
                             modelPathField.text = fileName;   
                             console.log("Model loading: ", selectedModelPath)
                             silverBrain.loadModel(path)  // mmproj будет по-умолчанию ""
@@ -292,22 +269,6 @@ ApplicationWindow {
                         }
                         enabled: !silverBrain.busy && !silverBrain.loading
                     }
-        /*            FileDialog {
-                        id: mmprojDialog
-                        title: "Choose mmproj"
-                        nameFilters: ["GGUF projector (*.gguf)"]
-                        onAccepted: {
-
-                            //var path = currentFile.toString()
-                            //if (path.startsWith("file://"))
-                            //    path = decodeURIComponent(path.substring(7))
-                            var path = localPath(currentFile)
-
-                            silverBrain.mmprojPath = path
-                        }
-                    }
-                    */
-                    //Button { text: "mmproj"; onClicked: mmprojDialog.open() }
 
                     Label { 
                         id: statusLabel; 
@@ -395,6 +356,7 @@ ApplicationWindow {
                                 width: parent.width
                                 isUser: model.role === "user"
                                 messageText: model.text
+                                reasoningText: model.reasoning
                             }
                         }
                         Component {
@@ -541,6 +503,10 @@ ApplicationWindow {
         function onTokenReceived(piece) {
             // Дописываем в последнее сообщение (пустое, созданное в sendMessage)
             chatModel.appendToLast(piece)
+        }
+        function onReasoningReceived(piece) {
+            // Дописываем в последнее сообщение (пустое, созданное в sendMessage)
+            chatModel.appendReasoningToLast(piece)
         }
         function onTokensGenerated(count) {
             generationStats.currentTokens = count
